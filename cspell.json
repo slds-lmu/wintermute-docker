@@ -1,0 +1,48 @@
+// cspell.json — spell-check config for VS Code / Cursor / `cspell` CLI.
+// Consumed by the cSpell extension when this file sits at the workspace
+// root, and by the `cspell` CLI for repo-wide lints. Format: JSONC
+// (// comments allowed). Hand-edited; picked up automatically with no
+// reload step.
+{
+  "version": "0.2",
+  "language": "en-US", // we always use American English
+  "useGitignore": true, // respect .gitignore (avoids checking generated/ignored files)
+  // additional paths to ignore beyond .gitignore
+  "ignorePaths": [
+    "TODO.md"       // operator's private German scratch list
+  ],
+  // File-type scope. Path-globs.
+  "files": [
+    "**/*.json", "**/*.jsonc",
+    "**/*.sh"
+  ],
+  // Active dictionaries.
+  "dictionaries": [
+    "project-words",
+    "shellscript"
+  ],
+  "dictionaryDefinitions": [
+    {
+      "name": "project-words",
+      "path": "./.cspell/project-words.txt",
+      "addWords": true
+    }
+  ],
+  // restrict to `//` and `/* */` comment text
+  "languageSettings": [
+    {
+      "languageId": "json,jsonc",
+      "includeRegExpList": ["CStyleComment"]
+    },
+    {
+      // Shell scripts: `#` comments plus single-line quoted strings.
+      // The string regexes catch typos in literals
+      "languageId": "shellscript",
+      "includeRegExpList": [
+        "/(?:^|\\s)#[^\\n]*/g",
+        "/\"[^\"\\n]*\"/g",
+        "/'[^'\\n]*'/g"
+      ]
+    }
+  ]
+}
