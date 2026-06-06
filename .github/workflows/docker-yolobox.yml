@@ -1,0 +1,362 @@
+# Purpose: Build the docker/yolobox image for linux/amd64 + linux/arm64 on
+#          native GitHub-hosted runners and push a multi-arch manifest to
+#          GitHub Container Registry (ghcr.io/slds-lmu/slds-yolobox).
+#
+# Why two jobs? Native cross-compilation isn't available, and emulating arm64
+# on an amd64 runner via QEMU is 3-5x slower. The cleaner pattern is:
+#   1. `build`   — matrix job that runs on the matching native runner per
+#                  arch and pushes the per-arch image *by digest* (no tag).
+#   2. `merge`   — single job that assembles those digests into a manifest
+#                  list under the human-readable tags (:latest, :<sha>, :date).
+#
+# Triggers:
+#   - push to main with docker/yolobox/** or workflow change   -> build + push
+#   - pull_request to main with the same path filter           -> build only
+#   - manual dispatch                                          -> build + push
+#   - weekly cron (Sunday 03:00 UTC)                           -> bump PPM date + build + push + commit bump
+#
+# Tags pushed per build:
+#   :latest         - moves with every build (default-branch only)
+#   :<git-sha>      - immutable per commit
+#   :YYYY-MM-DD     - human-readable snapshot (default-branch only)
+#
+# Required secrets: none — GITHUB_TOKEN (auto-issued per run) is sufficient
+# for ghcr.io pushes within the same org.
+#
+# Cost note: ubuntu-24.04-arm runners are FREE for public repos and BILLED
+# for private repos at standard Linux rates.
+
+# Display name in the Actions tab and on PR check lists.
+name: Build and push yolobox image
+
+on:
+  # Build + push on every commit to main that touches the image or workflow.
+  push:
+    # Restrict to the default branch; feature-branch pushes don't run.
+    branches: [main]
+    # Path filter: don't burn CI minutes when the change is unrelated to the
+    # image (e.g. publs/, repo-level READMEs, AGENTS.md).
+    paths:
+      - "docker/yolobox/**"
+      - ".github/workflows/docker-yolobox.yml"
+
+  # Build (no push) on PRs against main — fail fast if either arch breaks.
+  pull_request:
+    branches: [main]
+    paths:
+      - "docker/yolobox/**"
+      - ".github/workflows/docker-yolobox.yml"
+
+  # Manual trigger from the Actions tab (handy for re-runs after a flaky build,
+  # or when you want to force-refresh :latest without a real change).
+  workflow_dispatch:
+
+  # Weekly rebuild so upstream apt/CRAN/PyPI/npm updates flow into :latest
+  # without anyone needing to push a no-op commit. The cron also bumps the
+  # PPM R-package date pin to T-7 days (see the `prepare` and `commit-bump`
+  # jobs) and commits the bump back to main, so the source repo always
+  # reflects the date the published image was built against. Manual dispatch
+  # and `push` events do NOT bump — they build against whatever is committed
+  # in install_packages.R right now.
+  schedule:
+    - cron: "0 3 * * 0"  # Sunday 03:00 UTC
+
+# GITHUB_TOKEN scopes for this run. Defaults are restrictive; we opt in to
+# what we actually need.
+permissions:
+  contents: read    # actions/checkout needs to read the repo
+  packages: write   # docker/build-push-action needs to push to ghcr.io
+
+# Reusable image reference — used by both jobs. Lowercased because ghcr
+# requires the namespace to be lowercase, and "slds-lmu" already is, but
+# this keeps the workflow safe if reused under a mixed-case org name.
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/slds-yolobox
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Job 0: On a `schedule` event, compute the PPM date pin (T-7 days) once
+  # and emit it as a job output, so both matrix legs of `build` and the
+  # final `commit-bump` job all pin to exactly the same date. T-7 is well
+  # past PPM's binary-publication lag, so the snapshot is guaranteed to be
+  # complete; the build hard-fails if it isn't (no source fallback).
+  #
+  # On non-schedule events the step is skipped and the output is empty —
+  # consumers gate on `github.event_name == 'schedule'`.
+  # -----------------------------------------------------------------------
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    outputs:
+      ppm_date: ${{ steps.compute.outputs.ppm_date }}
+    steps:
+      - name: Compute PPM date pin (T-7 days, schedule only)
+        id: compute
+        if: github.event_name == 'schedule'
+        run: |
+          date=$(date -u -d '7 days ago' +%Y-%m-%d)
+          echo "ppm_date=$date" >> "$GITHUB_OUTPUT"
+          echo "Will pin PPM to noble/$date"
+
+  # -----------------------------------------------------------------------
+  # Job 1: Build per-arch on the matching native runner. Each matrix leg
+  # pushes the resulting image *by digest only* (no tag) and uploads its
+  # digest as an artifact for the merge job to pick up.
+  # -----------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    # Run on the runner that natively matches the target platform — no QEMU.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # Don't cancel the other arch if one fails — see both results in the
+      # PR check list, easier to diagnose arch-specific issues.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            # GA since 2025; free for public repos, billed for private.
+            runner: ubuntu-24.04-arm
+
+    steps:
+      # Stash a slug like "linux-amd64" for use as a unique artifact name.
+      - name: Derive platform slug
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      # Brings the repo onto the runner so docker/yolobox/* is available
+      # as the build context.
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # On scheduled (weekly) builds, bump the PPM date pin in install_packages.R
+      # to the T-7 date computed by the `prepare` job, BEFORE the docker build
+      # consumes the file. The bump is then committed back to main by the
+      # `commit-bump` job after build/merge succeed (see job at bottom).
+      #
+      # Hard-fails if the URL pattern can't be matched — e.g. install_packages.R
+      # was restructured and the regex below no longer applies — so the cron
+      # never silently skips the bump.
+      - name: Bump PPM date pin in install_packages.R (schedule only)
+        if: github.event_name == 'schedule'
+        run: |
+          target="docker/yolobox/install_packages.R"
+          new="${{ needs.prepare.outputs.ppm_date }}"
+          if ! grep -qE "noble/[0-9]{4}-[0-9]{2}-[0-9]{2}" "$target"; then
+            echo "ERROR: no PPM date line of form noble/YYYY-MM-DD in $target" >&2
+            exit 1
+          fi
+          sed -i -E "s|noble/[0-9]{4}-[0-9]{2}-[0-9]{2}|noble/${new}|" "$target"
+          echo "Pinned PPM to noble/${new}:"
+          grep -E "noble/[0-9]{4}-[0-9]{2}-[0-9]{2}" "$target"
+
+      # Default runners have ~25 GB free; this image is large and the build
+      # context plus apt downloads push us close to the limit.
+      - name: Free up runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android "$AGENT_TOOLSDIRECTORY" || true
+          sudo apt-get clean
+          df -h /
+
+      # Docker Hub anonymous pulls are rate-limited per runner egress IP and
+      # occasionally just hang, which makes `setup-buildx-action` flake when
+      # it pulls moby/buildkit:buildx-stable-1. Pre-pull with retries so the
+      # image is in the local daemon by the time setup-buildx runs (it then
+      # skips its own pull).
+      - name: Pre-pull buildkit image (retry around Docker Hub flakiness)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 3
+          max_attempts: 5
+          retry_wait_seconds: 20
+          command: docker pull moby/buildkit:buildx-stable-1
+
+      # Required for GHA layer caching (`type=gha`) and for build-push-action.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        # Skipped on pull_request — we don't push, so no creds needed.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/yolobox
+          # Single platform per matrix leg — runs natively, no emulation.
+          platforms: ${{ matrix.platform }}
+          # Push by digest (no tag) on real builds; PRs build only.
+          # The merge job below stitches per-arch digests into tagged manifests.
+          outputs: |
+            type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          # On the weekly cron, ignore the layer cache entirely so apt /
+          # CRAN / PyPI / npm updates actually flow in. Without this, every
+          # RUN's hash is unchanged and the cron just retags the old image.
+          # Push / PR / dispatch builds keep using the cache for speed.
+          no-cache: ${{ github.event_name == 'schedule' }}
+          # Per-platform cache scope so amd64 and arm64 don't overwrite each
+          # other's cached layers.
+          cache-from: type=gha,scope=${{ matrix.platform }}-yolobox
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}-yolobox
+
+      # On real builds, write the resulting digest into a file whose name
+      # IS the digest — the merge job downloads these and uses the filenames.
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          # Unique per-platform name so amd64 and arm64 artifacts coexist.
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          # Short retention — these are intermediate; the merged manifest
+          # is the durable artifact.
+          retention-days: 1
+
+  # -----------------------------------------------------------------------
+  # Job 2: Combine per-arch digests into a multi-arch manifest list under
+  # the human-readable tags. Skipped on pull_request because nothing was
+  # pushed in the build job, so there are no digests to merge.
+  # -----------------------------------------------------------------------
+  merge:
+    name: Merge multi-arch manifest
+    # Only meaningful when the build job actually pushed.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      # Pull every digest-* artifact uploaded by the matrix and flatten
+      # them into one directory so we can iterate.
+      - name: Download digest artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      # Same Docker Hub flake guard as in the build job — pre-pull buildkit
+      # with retries so setup-buildx-action finds it locally and doesn't
+      # bootstrap-fail on a transient registry timeout.
+      - name: Pre-pull buildkit image (retry around Docker Hub flakiness)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 3
+          max_attempts: 5
+          retry_wait_seconds: 20
+          command: docker pull moby/buildkit:buildx-stable-1
+
+      # buildx is needed for `imagetools create`, which builds the manifest.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Same tag rules as before — but applied here, on the manifest list,
+      # not on individual per-arch images.
+      - name: Compute image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            # :latest — only on default-branch builds.
+            type=raw,value=latest,enable={{is_default_branch}}
+            # :<short-sha> — emitted on every event; the immutable handle.
+            type=sha,prefix=
+            # :YYYY-MM-DD — only on default-branch builds.
+            type=raw,value={{date 'YYYY-MM-DD'}},enable={{is_default_branch}}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `imagetools create` takes a list of `-t <tag>` flags plus a list of
+      # source references (here: per-arch digests) and produces a manifest
+      # list pointing at all of them. The shell expansion below produces:
+      #   docker buildx imagetools create -t IMAGE:tag1 -t IMAGE:tag2 ... \
+      #       IMAGE@sha256:<amd64-digest> IMAGE@sha256:<arm64-digest>
+      - name: Create and push multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      # Sanity check + visible output: dump the resulting manifest, including
+      # both arch entries, to the run summary.
+      - name: Inspect resulting manifest
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+
+      - name: Print resulting tags
+        run: |
+          echo "Pushed (multi-arch manifest):"
+          echo "${{ steps.meta.outputs.tags }}"
+
+  # -----------------------------------------------------------------------
+  # Job 3: On a `schedule` event only, after the build + merge have succeeded
+  # and the image is published, commit the same PPM date bump that the build
+  # used back to main. This keeps install_packages.R at HEAD a faithful
+  # description of what `:latest` (and the matching `:<sha>` / `:YYYY-MM-DD`
+  # tags) was actually built from.
+  #
+  # `[skip ci]` in the commit message prevents the resulting push event from
+  # re-triggering this same workflow.
+  #
+  # Hard-fails if any of:
+  #   - the URL pattern can't be matched (install_packages.R restructured)
+  #   - branch protection on main blocks the bot push
+  #   - somebody pushed a non-ff commit between checkout and push
+  # i.e. the date pin in main can drift out of sync only by an explicit
+  # human commit, never silently from a half-completed cron.
+  # -----------------------------------------------------------------------
+  commit-bump:
+    name: Commit PPM date bump
+    if: github.event_name == 'schedule'
+    needs: [prepare, merge]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write    # job-scoped override of the top-level read-only token
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Default GITHUB_TOKEN; the job-level `contents: write` above
+          # gives it push rights for the duration of this job.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply and commit PPM date bump
+        run: |
+          target="docker/yolobox/install_packages.R"
+          new="${{ needs.prepare.outputs.ppm_date }}"
+          if ! grep -qE "noble/[0-9]{4}-[0-9]{2}-[0-9]{2}" "$target"; then
+            echo "ERROR: no PPM date line of form noble/YYYY-MM-DD in $target" >&2
+            exit 1
+          fi
+          sed -i -E "s|noble/[0-9]{4}-[0-9]{2}-[0-9]{2}|noble/${new}|" "$target"
+          if git diff --quiet "$target"; then
+            echo "No change — install_packages.R already pinned to noble/${new}"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$target"
+          git commit -m "chore(docker): bump yolobox PPM date pin to ${new} [skip ci]"
+          git push

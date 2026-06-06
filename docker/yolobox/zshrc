@@ -1,0 +1,105 @@
+# -----------------------------------------------------------------------------
+# Default zshrc shipped in the slds-tools yolobox image.
+# Ported from sysadmin/stow/shell/.zshrc, trimmed to what works inside the
+# container (no cargo / wl-clipboard / host-specific PATH bits).
+# -----------------------------------------------------------------------------
+
+# ---- non-interactive guard ----
+# $- holds the shell's option flags; *i* matches if the interactive flag is
+# set. If we're sourced by a script or `zsh -c '...'`, return early so we
+# don't pay for prompt/completion/history setup that only slows non-
+# interactive invocations down.
+[[ $- != *i* ]] && return
+
+# ---- history ----
+HISTFILE="$HOME/.zsh_history"
+HISTSIZE=50000              # in-memory history per session
+SAVEHIST=50000              # lines persisted to $HISTFILE
+setopt SHARE_HISTORY        # share history between concurrent shells
+setopt HIST_IGNORE_DUPS     # drop a command identical to the previous one
+setopt HIST_IGNORE_SPACE    # leading space keeps a line out of history
+setopt HIST_REDUCE_BLANKS   # collapse internal whitespace before saving
+setopt EXTENDED_HISTORY     # prepend `: <epoch>:<elapsed>;` to each entry
+
+# ---- options ----
+setopt AUTO_CD              # bare `dirname` at prompt cd's there
+setopt INTERACTIVE_COMMENTS # allow `# comments` at the prompt
+setopt NO_BEEP              # silence the terminal bell
+
+# ---- keybindings ----
+# Force emacs keymap. zsh otherwise picks vi mode whenever $EDITOR contains
+# "vi", and in vi insert mode Ctrl-R is silently no-op.
+bindkey -e
+
+# ---- completion ----
+# `compinit` scans $fpath for _completion files and caches in ~/.zcompdump.
+# `-Uz` autoload flags: U = no alias expansion, z = zsh-style autoload.
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select                          # arrow-key menu (vs cycling)
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'   # case-insensitive matching
+
+# ---- terminal: don't intercept Ctrl-S ----
+# Default tty driver treats Ctrl-S as XOFF (freeze output) and Ctrl-Q as XON.
+# Disable it so Ctrl-S can never freeze the shell. Guard on -t 0 so we don't
+# run stty when stdin isn't a tty.
+[[ -t 0 ]] && stty -ixon 2>/dev/null
+
+# ---- editor ----
+# Honored by git, crontab, sudoedit, etc. VISUAL is what some tools (less -v,
+# mutt) prefer; set both to the same thing to avoid surprises.
+export EDITOR=/usr/bin/vim
+export VISUAL=$EDITOR
+
+# ---- locale ----
+# Keep numeric C so R / packaging / scripts use `.` as decimal separator,
+# regardless of LANG/LC_ALL.
+export LC_NUMERIC=C
+
+# ---- PATH ----
+# Prepend ~/.local/bin so any user-scope installs (uv tool, pipx, ad-hoc
+# scripts) win over system equivalents. Existence-guarded so PATH doesn't
+# gain a phantom entry on a fresh container.
+[[ -d "$HOME/.local/bin" ]] && PATH="$HOME/.local/bin:$PATH"
+export PATH
+
+# ---- aliases + helper functions ----
+# Aliases live in their own file. Sourced before plugin widgets below so any
+# alias can shadow PATH-resolved commands set up above.
+[[ -f "$HOME/.zsh_aliases" ]] && source "$HOME/.zsh_aliases"
+
+# ---- fzf ----
+# Fuzzy finder. Two pieces sourced from Ubuntu's fzf package:
+#   - key-bindings.zsh: binds Ctrl-R (history), Ctrl-T (file picker),
+#     Alt-C (cd picker). These install zle widgets, so they MUST be sourced
+#     BEFORE zsh-syntax-highlighting wraps the widget table below.
+#   - completion.zsh: fuzzy completion for paths and PIDs via `**<Tab>`.
+[[ -f /usr/share/doc/fzf/examples/key-bindings.zsh ]] \
+  && source /usr/share/doc/fzf/examples/key-bindings.zsh
+[[ -f /usr/share/doc/fzf/examples/completion.zsh ]] \
+  && source /usr/share/doc/fzf/examples/completion.zsh
+
+# ---- zsh-autosuggestions ----
+# Fish-style ghost-text suggestion from history as you type. Accept with → (or
+# End, or Ctrl-F). MUST come BEFORE syntax-highlighting: both install zle
+# widgets, and syntax-highlighting wraps whatever widgets exist when it loads.
+[[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]] \
+  && source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+
+# ---- zsh-syntax-highlighting ----
+# Colors the command line live: unknown commands red, valid green, files
+# underlined, etc. Upstream requires this to be the LAST line that installs
+# zle widgets — keep it at the bottom.
+[[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] \
+  && source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+# ---- zoxide ----
+# Smart `cd` replacement: `z foo` jumps to the most-frecently-used dir matching
+# "foo"; `zi foo` opens an interactive fzf picker. Installs the `z` / `zi`
+# widgets but no zle bindings, so order vs. syntax-highlighting doesn't matter.
+command -v zoxide >/dev/null && eval "$(zoxide init zsh)"
+
+# ---- starship prompt ----
+# Cross-shell prompt. Config at ~/.config/starship.toml combines the
+# plain-text-symbols preset (so no Nerd Font is required) with custom format /
+# directory / cmd_duration tweaks.
+command -v starship >/dev/null && eval "$(starship init zsh)"

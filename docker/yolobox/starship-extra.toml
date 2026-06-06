@@ -1,0 +1,32 @@
+# starship-extra.toml — appended onto starship's `plain-text-symbols` preset
+# at build time to produce /home/yolo/.config/starship.toml.
+#
+# Why split: the preset replaces Nerd Font glyphs with text so the prompt
+# renders on any terminal (no Nerd Font assumption). These overrides layer
+# user-facing structure (two-line prompt, smarter directory truncation, quiet
+# cmd_duration) on top.
+#
+# Ported from sysadmin/stow/shell/.config/starship.toml.
+
+# Two-line prompt: info on top, just `$` on the line you type on.
+# Avoids the prompt running off the right when paths get long.
+format = """
+$directory\
+$git_branch\
+$git_status\
+$rust\
+$python\
+$nodejs\
+$cmd_duration\
+$line_break\
+$character"""
+
+# Don't show duration for fast commands.
+[cmd_duration]
+min_time = 2_000
+format = "took [$duration]($style) "
+
+# Truncate long path segments at the boundary (parent dirs only).
+[directory]
+truncation_length = 4
+truncation_symbol = "…/"

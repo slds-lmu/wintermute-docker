@@ -1,0 +1,84 @@
+# ~/.zsh_aliases — sourced by ~/.zshrc.
+# Aliases + small helper functions. Ported from sysadmin/stow/shell/.zsh_aliases,
+# trimmed to what's relevant inside the slds-tools yolobox image.
+
+# ---- basic ls / fs ----
+alias ll='ls -lh'
+alias la='ls -lha'
+alias du='du -h'
+alias df='df -h'
+alias mkdir='mkdir -p'           # interactive only; scripts ignore aliases
+
+# ---- colors ----
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+
+# ---- R ----
+# Cleaner startup: no save/restore prompts, no version banner.
+alias R='R --no-save --no-restore-data --quiet'
+
+# ---- git ----
+# Short verbs live in ~/.gitconfig under [alias] so they work in any shell.
+alias g='git'
+
+# gccm [git-commit-flags…]: commit using the message Claude Code wrote to
+# <repo-root>/.claude-commit-msg. Per the global CLAUDE.md, Claude proposes a
+# commit message by writing it to that file instead of running `git commit`
+# itself; the user reviews the diff and runs gccm to actually commit. Any args
+# are forwarded to `git commit -F <msg-file>`.
+# The file is removed only on successful commit, so a hook failure leaves it
+# intact for retry. Use `gccm-show` to preview first.
+# Examples:
+#   gccm          # commit already-staged changes with Claude's msg
+#   gccm -a       # stage all tracked changes, then commit
+#   gccm -s       # also add a Signed-off-by trailer
+gccm() {
+  local f
+  f="$(git rev-parse --show-toplevel 2>/dev/null)/.claude-commit-msg"
+  [[ -f $f ]] || { echo "gccm: no $f" >&2; return 1; }
+  git commit -F "$f" "$@" && rm -f "$f"
+}
+
+# gccm-p [git-commit-flags…]: gccm + push to the current branch's upstream.
+# Stops if the commit fails. Args forward to `git commit`, not `git push`.
+gccm-p() {
+  gccm "$@" && git push
+}
+
+# gccm-show: preview before running gccm — prints `git status -sb` first, then
+# the pending commit message last so it's closest to the prompt when reviewing.
+gccm-show() {
+  local f
+  f="$(git rev-parse --show-toplevel 2>/dev/null)/.claude-commit-msg"
+  [[ -f $f ]] || { echo "gccm-show: no $f" >&2; return 1; }
+  printf '── git status ──\n'
+  git status -sb
+  printf '── %s ──\n' "$f"
+  cat "$f"
+}
+
+# gccm-gen: ask Claude (non-interactive `claude -p`) to write a commit message
+# for the currently-staged changes into <repo-root>/.claude-commit-msg. Use
+# retroactively when you didn't get a message from an active CC session. After
+# it returns, run `gccm-show` + `gccm` as usual. Requires the `claude` CLI on
+# PATH and counts against your CC quota; cost grows with diff size.
+gccm-gen() {
+  local repo f diff
+  repo="$(git rev-parse --show-toplevel 2>/dev/null)" \
+    || { echo "gccm-gen: not in a git repo" >&2; return 1; }
+  f="$repo/.claude-commit-msg"
+  diff="$(git diff --cached)"
+  [[ -n "$diff" ]] || { echo "gccm-gen: no staged changes" >&2; return 1; }
+  printf '%s\n' "$diff" \
+    | claude -p 'Write a one-line, imperative-mood git commit message (<100 chars) summarizing the following staged diff. Output ONLY the message — no preamble, no quotes, no trailing blank lines.' \
+    > "$f" || { rm -f "$f"; echo "gccm-gen: claude failed" >&2; return 1; }
+  printf '── %s ──\n' "$f"
+  cat "$f"
+}
+
+# ---- count-files ----
+# Per top-level entry in cwd, print path + count of all filesystem entries
+# (files + dirs) beneath it. First line is grand total for cwd. No args.
+count-files() {
+  find . -maxdepth 1 -type d -exec sh -c 'echo "{}"; find "{}" | wc -l' \;
+}

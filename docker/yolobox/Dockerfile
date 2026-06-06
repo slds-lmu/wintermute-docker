@@ -1,0 +1,283 @@
+FROM ghcr.io/finbarr/yolobox:latest
+
+# Upstream image runs as the unprivileged `yolo` user; switch to root for the
+# apt / pip / R installs below. Restore the default user at the end.
+USER root
+
+# Install system packages.
+#
+# NOTE on what NOT to (re-)install here: the upstream ghcr.io/finbarr/yolobox
+# already ships a baseline of dev tooling, including:
+#   bat, build-essential, cmake, eza, fd-find, fzf, gh, git, gnupg, htop, jq,
+#   less, nano, nodejs (+ npm), openssh-client, ripgrep, rsync, sudo, tree,
+#   unzip, vim, zip.
+# We intentionally do NOT re-list those — apt would no-op, but listing them
+# would falsely imply ownership and bloat the diff against upstream. Anything
+# below is either missing from upstream or something we want to pin/own here.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Locale data (en_US.UTF-8 generated below; LANG/LC_ALL stay C.UTF-8)
+    locales \
+    # Extra shell utilities
+    procps \
+    aggregate \
+    tmux \
+    parallel \
+    bc \
+    # ---- shell dev / testing ----
+    # bats: Bash Automated Testing System — TAP-style test runner. /usr/bin/bats.
+    bats \
+    # shellcheck: static analysis for shell scripts (pairs with bats).
+    shellcheck \
+    # ---- archive / transfer / extraction ----
+    # xz-utils: .xz / .lzma support (tar -J).
+    xz-utils \
+    # dtrx: "do the right extraction" — one command for any archive format.
+    dtrx \
+    # ---- inspection / DB / diagrams ----
+    # sqlite3: lightweight DB CLI for inspection.
+    sqlite3 \
+    # graphviz: dot/neato — used by R/Python doc pipelines (DiagrammeR, etc.).
+    graphviz \
+    # ---- git ergonomics ----
+    # git-lfs: large-file storage support for git (needed by some repos).
+    git-lfs \
+    # git-delta: side-by-side syntax-highlighted pager for git diff / log / show.
+    # Wired in /etc/gitconfig below so all users get it without per-user setup.
+    git-delta \
+    # ---- modern CLI ergonomics ----
+    # zoxide: smart `cd` replacement. Shell integration added in zshrc.
+    zoxide \
+    # tealdeer: fast Rust client for tldr-pages (three-line CLI summaries).
+    # First run: `tldr -u` to fetch the page cache.
+    tealdeer \
+    # hyperfine: command-line benchmarking with warmups and statistics.
+    hyperfine \
+    # NOTE: glow is NOT in Ubuntu 24.04 noble's repos (added in 25.04). It is
+    # installed from Charm's official apt repo in a later RUN block.
+    # ---- C/C++ scientific dev kit ----
+    # build-essential + cmake come from upstream. We add the analysis / debug
+    # tooling that's typically needed for native R/Python extension work.
+    clang \
+    clangd \
+    clang-tidy \
+    ccache \
+    gdb \
+    valgrind \
+    cppcheck \
+    && locale-gen en_US.UTF-8 \
+    # Symlinks for Ubuntu's renamed binaries so the canonical names work:
+    #   /usr/bin/fdfind  (fd-find package) -> fd
+    #   /usr/bin/batcat  (bat package)     -> bat
+    # `ln -sf` is idempotent in case upstream ever adds these symlinks.
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && ln -sf /usr/bin/batcat /usr/local/bin/bat \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcurl4-openssl-dev \
+    libxml2-dev \
+    libfontconfig1-dev \
+    libharfbuzz-dev \
+    libfribidi-dev \
+    libfreetype6-dev \
+    libpng-dev \
+    libtiff5-dev \
+    libjpeg-dev \
+    libgit2-dev \
+    zlib1g-dev \
+    libeigen3-dev \
+    libx11-dev \
+    libglpk-dev \
+    libudunits2-dev \
+    libhiredis-dev \
+    libproj-dev \
+    libprotobuf-dev \
+    libgdal-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# LaTeX / document toolchain. texlive-full pulls ~3000 .deb
+# files, so add apt retry/timeout config first to survive flaky mirrors.
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
+    && echo 'Acquire::http::Timeout "120";' >> /etc/apt/apt.conf.d/80-retries \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        pandoc \
+        tidy \
+        qpdf \
+        poppler-utils \
+        lmodern \
+        texlive-full \
+    && rm -rf /var/lib/apt/lists/*
+
+# CRAN apt repo + R. Provides current R instead of Ubuntu's stock r-base.
+RUN wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc \
+        | tee /etc/apt/trusted.gpg.d/cran_ubuntu_key.asc > /dev/null \
+    && echo "deb https://cloud.r-project.org/bin/linux/ubuntu noble-cran40/" \
+        > /etc/apt/sources.list.d/cran.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        r-base \
+        r-base-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# R packages via pak (tidyverse + mlr3 ecosystem). See install_packages.R for
+# the package list, PPM date pin, and repository policy.
+COPY install_packages.R /tmp/install_packages.R
+RUN Rscript /tmp/install_packages.R && rm /tmp/install_packages.R
+
+# Python tooling. We deliberately do NOT install a global stack,
+# projects are supposed to handle this locally. Because nothing
+# here writes to the system interpreter, Ubuntu's PEP 668 EXTERNALLY-MANAGED
+# marker is left in place.
+#
+# copier (project/template scaffolding CLI) is a *tool*, not a library, so it
+# goes in as an isolated `uv` tool: its own venv under /opt/uv/tools with the
+# launcher symlinked into /usr/local/bin, so the runtime `yolo` user finds
+# `copier` on PATH (the build runs as root). The env vars are scoped to this RUN
+# so a `yolo`-user `uv tool install` at runtime still uses its own ~/.local dirs.
+RUN UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
+        uv tool install --no-cache copier \
+    && copier --version
+
+# air: Posit's R formatter (Rust binary). The cargo-dist installer drops the
+# binary at /root/.local/bin/air; move it to /usr/local/bin so every user
+# finds it on PATH, then strip the rc-file edits the installer leaves behind.
+RUN curl -LsSf https://github.com/posit-dev/air/releases/latest/download/air-installer.sh | sh \
+    && mv /root/.local/bin/air /usr/local/bin/air \
+    && rm -rf /root/.local /root/.config/air \
+    && sed -i '/\.local\/bin\/env/d' /root/.zshrc /root/.bashrc /root/.profile 2>/dev/null || true
+
+# Claude Code (Anthropic's CLI, `claude`). Re-install `@latest` so every rebuild
+# of this image picks up the current release rather than whatever upstream
+# bundled.
+#
+# Upstream layout we must work around:
+#   /usr/local/bin/claude          — a ~245 MB self-contained native binary
+#   /opt/yolobox/bin/claude        — wrapper that strips itself from PATH then
+#                                    re-runs `which claude` (i.e. resolves
+#                                    against the rest of PATH) and execs with
+#                                    --dangerously-skip-permissions.
+#   /home/yolo/.local/bin/claude   — symlink -> /usr/local/bin/claude
+#
+# The wrapper's `which claude` hits /home/yolo/.local/bin/claude first, which
+# points at /usr/local/bin/claude — so to override claude we MUST replace that
+# specific file. A plain `npm install -g` as root goes to root's npm prefix
+# (`/usr`, giving /usr/bin/claude) and is shadowed by the symlink; hence the
+# explicit `--prefix=/usr/local`. We remove the upstream native binary first
+# so npm's small JS shim can take its place at /usr/local/bin/claude.
+#
+# CLAUDE_CACHE_BUST: Docker caches RUN lines by literal text, so without a
+# cache-busting arg the `@latest` resolves once and then sticks forever. Bump
+# this (or pass `--build-arg CLAUDE_CACHE_BUST=$(date +%s)`) to force re-pull.
+#
+# The `gccm-gen` alias in zsh_aliases depends on `claude -p` being on PATH.
+ARG CLAUDE_CACHE_BUST=1
+RUN rm -f /usr/local/bin/claude \
+    && npm install -g --prefix=/usr/local @anthropic-ai/claude-code@latest \
+    && npm cache clean --force \
+    && /usr/local/bin/claude --version
+
+# Claude launch shim. We replace the npm `claude` launcher at
+# /usr/local/bin/claude with a wrapper that runs once before the real binary,
+# after the yolobox entrypoint snapshot but before Claude reads anything.
+# Under claude_config=true the entrypoint snapshots host ~/.claude in one-way
+# (dead copy). The shim does two fixups on top:
+#   1. Rewrites the plugin registry's absolute host paths to the container home
+#      (cp copies them verbatim, so plugins would otherwise fail to load).
+#   2. Bridges the dirs we want LIVE by symlinking them to rw host mounts staged
+#      at /host-claude-* (outside ~/.claude, so the entrypoint's `rm -rf` can't
+#      clobber the host data): ~/.claude/projects (sessions + per-project
+#      memory) and ~/.claude/history.jsonl (prompt history).
+# Credentials are NOT bridged — the snapshot copy is enough.
+# The shim execs the real binary (claude.exe) by absolute path, so the upstream
+# /opt/yolobox/bin/claude wrapper still resolves `which claude` here without
+# recursion. The rw mounts themselves come from the sysadmin config.toml
+# `mounts` list; see claude-launch-shim.sh for the expected mount paths.
+COPY claude-launch-shim.sh /usr/local/bin/claude
+RUN chmod 0755 /usr/local/bin/claude
+
+# Interactive shell setup: zsh + plugins + starship prompt.
+# The upstream yolobox base ships fzf but its
+# shell-integration scripts under /usr/share/doc/fzf/examples/ are stripped by
+# Ubuntu's dpkg.cfg.d/excludes (path-exclude=/usr/share/doc/*). We add a
+# path-include for that directory BEFORE reinstalling fzf so the key-bindings
+# and completion files get unpacked. Then install zsh and the two plugins.
+RUN echo 'path-include=/usr/share/doc/fzf/examples/*' \
+        > /etc/dpkg/dpkg.cfg.d/zz-keep-fzf-shell-integration \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends --reinstall fzf \
+    && apt-get install -y --no-install-recommends \
+        zsh \
+        zsh-autosuggestions \
+        zsh-syntax-highlighting \
+    && rm -rf /var/lib/apt/lists/*
+
+# starship: cross-shell prompt (Rust binary). The plain-text-symbols preset
+# avoids requiring a Nerd Font in the host terminal.
+RUN curl -fsSL https://starship.rs/install.sh \
+        | sh -s -- --yes --bin-dir /usr/local/bin
+
+# yq: YAML/JSON/XML processor (mikefarah/yq, Go binary). Not in Ubuntu apt,
+# so we fetch the latest release directly into /usr/local/bin.
+RUN curl -fsSL -o /usr/local/bin/yq \
+        https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+    && chmod +x /usr/local/bin/yq
+
+# glow: Charm.sh terminal Markdown renderer. Not in Ubuntu 24.04 noble repos
+# (lands in 25.04+), so we use Charm's official apt repo. The key is scoped
+# via [signed-by=...] so it only authenticates packages from repo.charm.sh
+# (modern apt practice; doesn't globally trust the Charm key for other repos).
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://repo.charm.sh/apt/gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/charm.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" \
+        > /etc/apt/sources.list.d/charm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends glow \
+    && rm -rf /var/lib/apt/lists/*
+
+# git-delta wiring: configure /etc/gitconfig so every user (root + yolo) gets
+# delta as the pager for `git diff` / `git log -p` / `git show` out of the box,
+# with no per-user dotfile copy needed. Users can still override in ~/.gitconfig.
+RUN git config --system core.pager delta \
+    && git config --system interactive.diffFilter "delta --color-only" \
+    && git config --system delta.navigate true \
+    && git config --system delta.light false \
+    && git config --system merge.conflictStyle zdiff3
+
+# Ship dotfiles for the unprivileged `yolo` user.
+#   .zshrc        — interactive shell behavior, plugin wiring, prompt init
+#   .zsh_aliases  — sourced by .zshrc; ls/grep colors, R alias, gccm helpers
+# The starship config is composed at build time: the plain-text-symbols preset
+# (so no Nerd Font is required) is concatenated with starship-extra.toml (the
+# user's format / directory / cmd_duration overrides). All files are owned by
+# yolo:yolo so the user can edit them at runtime.
+# Also drop ~/.parallel/will-cite so GNU parallel skips its first-run citation
+# nag for non-interactive scripts (`parallel --citation` accepts the same thing).
+COPY --chown=yolo:yolo zshrc        /home/yolo/.zshrc
+COPY --chown=yolo:yolo zsh_aliases  /home/yolo/.zsh_aliases
+COPY                  starship-extra.toml /tmp/starship-extra.toml
+RUN install -d -o yolo -g yolo /home/yolo/.config \
+    && starship preset plain-text-symbols -o /tmp/starship-base.toml \
+    && cat /tmp/starship-base.toml /tmp/starship-extra.toml \
+        > /home/yolo/.config/starship.toml \
+    && chown yolo:yolo /home/yolo/.config/starship.toml \
+    && rm /tmp/starship-base.toml /tmp/starship-extra.toml \
+    && install -d -o yolo -g yolo /home/yolo/.parallel \
+    && touch /home/yolo/.parallel/will-cite \
+    && chown yolo:yolo /home/yolo/.parallel/will-cite \
+    && chsh -s /bin/zsh yolo
+
+# SHELL=/bin/zsh exposes the chosen interactive shell to subprocesses (tmux,
+# git, sub-shells) so they pick zsh as well.
+# LC_NUMERIC=C keeps R / packaging / scripts using `.` as decimal separator
+# regardless of LANG. Set at the Docker layer so even non-interactive shells
+# (Rscript invoked from cron, scripts launched via `zsh -c`) inherit it; the
+# .zshrc also exports it as a belt-and-braces for shells that bypass ENV.
+ENV SHELL=/bin/zsh \
+    LC_NUMERIC=C
+
+# Restore the unprivileged default user from the upstream image so containers
+# launched from this image keep dropping privileges by default.
+USER yolo
+WORKDIR /home/yolo
