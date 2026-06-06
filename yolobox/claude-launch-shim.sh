@@ -56,7 +56,21 @@
 #   `claude` on PATH.
 set -u
 
-REAL=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe   # the real Claude Code binary
+# Resolve the real Claude Code entry point that npm installed into the package
+# dir. Don't hardcode a single filename: the package has shipped its launcher
+# under different names across releases (cli.js for the JS build, bin/claude.exe
+# or bin/claude for native builds), and a wrong guess makes `claude` silently
+# dead. Probe the known candidates and fail loudly if none match, so a future
+# upstream rename surfaces as a clear error at launch instead of a broken exec.
+PKG=/usr/local/lib/node_modules/@anthropic-ai/claude-code
+REAL=
+for cand in "$PKG/cli.js" "$PKG/bin/claude.exe" "$PKG/bin/claude" "$PKG/claude"; do
+  [ -f "$cand" ] && { REAL=$cand; break; }
+done
+[ -n "$REAL" ] || {
+  echo "claude shim: cannot locate Claude Code entry point under $PKG" >&2
+  exit 127
+}
 
 # ── Plugin registry path fixup ──────────────────────────────────────────────
 # Repoint the snapshotted registry from the embedded host paths to the

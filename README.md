@@ -1,15 +1,16 @@
 # slds-tools Docker images
 
-This directory builds the project's container images. Today that is a single
+This repository builds the project's container images. Today that is a single
 image — **yolobox** — a data-science / dev sandbox layered on top of the upstream
 [`ghcr.io/finbarr/yolobox`](https://github.com/finbarr/yolobox) base.
 
 ## Layout
 
 ```
-docker/
-├── CLAUDE.md              # contributor rules for this dir (doc every file, etc.)
+.
+├── CLAUDE.md              # contributor rules for this repo (doc every file, etc.)
 ├── README.md              # this file
+├── .github/workflows/     # CI: docker-yolobox.yml (multi-arch build + push)
 └── yolobox/
     ├── Dockerfile         # the image definition
     ├── install_packages.R # R package set + PPM date pin (run from the Dockerfile)
@@ -30,7 +31,7 @@ docker/
 ## Building (autobuilt in CI)
 
 You normally don't build this image by hand — it is built and published by
-GitHub Actions in [`.github/workflows/docker-yolobox.yml`](../.github/workflows/docker-yolobox.yml).
+GitHub Actions in [`.github/workflows/docker-yolobox.yml`](.github/workflows/docker-yolobox.yml).
 The workflow builds a **multi-arch** image (`linux/amd64` + `linux/arm64`) on
 native runners (no QEMU) and pushes it to
 **`ghcr.io/slds-lmu/slds-yolobox`**.
@@ -43,7 +44,7 @@ digests into one multi-arch manifest under the human-readable tags.
 
 | event | what happens |
 |-------|--------------|
-| push to `main` touching `docker/yolobox/**` or the workflow | build **+ push** |
+| push to `main` touching `yolobox/**` or the workflow | build **+ push** |
 | pull request to `main` (same path filter) | build **only** (no push — fail fast on either arch) |
 | manual `workflow_dispatch` | build **+ push** |
 | weekly cron (Sun 03:00 UTC) | bump R PPM date + **no-cache** rebuild + push + commit the bump |
@@ -60,7 +61,7 @@ needed; the per-run `GITHUB_TOKEN` is sufficient for ghcr.io pushes.
 ### Building locally 
 
 ```sh
-docker build -t slds-yolobox docker/yolobox
+docker build -t slds-yolobox yolobox
 ```
 
 Useful build args:
@@ -72,13 +73,15 @@ Useful build args:
 
 The Dockerfile is organized into commented `RUN` blocks. In order:
 
-1. **CLI / shell tooling** — locales, tmux, parallel, bats + shellcheck, sqlite3,
-   graphviz, git-lfs, git-delta, zoxide, tealdeer, hyperfine, plus a C/C++ dev kit
-   (clang/clangd/clang-tidy, gdb, valgrind, cppcheck, ccache).
+1. **CLI / shell tooling** — locales, procps, aggregate, tmux, parallel, bc,
+   bats + shellcheck, xz-utils, dtrx, sqlite3, graphviz, git-lfs, git-delta,
+   zoxide, tealdeer, hyperfine, plus a C/C++ dev kit (clang/clangd/clang-tidy,
+   gdb, valgrind, cppcheck, ccache).
 2. **Native dev libraries** — the `-dev` headers needed to compile R/Python
    packages with native code (libcurl, libxml2, fontconfig, freetype, GDAL, GLPK,
    Eigen, …).
-3. **LaTeX / document toolchain** — pandoc, qpdf, poppler-utils, `texlive-full`.
+3. **LaTeX / document toolchain** — pandoc, tidy, qpdf, poppler-utils, lmodern,
+   `texlive-full`.
 4. **R** — current R from the CRAN apt repo, then packages via `install_packages.R`
    (see *R packages* below).
 5. **Python** — no global library stack; only `copier` as an isolated `uv` tool
@@ -91,6 +94,13 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    shell-integration, git wiring in `/etc/gitconfig` (git-delta pager plus the
    short git aliases — `s`, `co`, `ci`, `lg`, `lo`, `last`, `unstage`, … — and
    `init.defaultBranch=main` / `pull.rebase=false`), and the `yolo` dotfiles.
+
+> **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
+> The non-R binaries fetched from upstream releases — `yq`, `air`, `starship`,
+> `glow`, and Claude Code — all pull `@latest` / `releases/latest`, so their
+> versions float with each (no-cache) rebuild. Of these, only Claude Code has a
+> cache-bust knob (`CLAUDE_CACHE_BUST`); the rest re-resolve whenever their
+> layer is rebuilt. The weekly no-cache cron therefore also moves these tools.
 
 ## R packages — repository policy and date pin
 

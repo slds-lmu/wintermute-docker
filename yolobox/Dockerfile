@@ -189,9 +189,9 @@ RUN rm -f /usr/local/bin/claude \
 #      clobber the host data): ~/.claude/projects (sessions + per-project
 #      memory) and ~/.claude/history.jsonl (prompt history).
 # Credentials are NOT bridged — the snapshot copy is enough.
-# The shim execs the real binary (claude.exe) by absolute path, so the upstream
-# /opt/yolobox/bin/claude wrapper still resolves `which claude` here without
-# recursion. The rw mounts themselves come from the sysadmin config.toml
+# The shim execs the real binary by absolute path (resolved from the npm package
+# dir — see the shim's candidate probe), so the upstream /opt/yolobox/bin/claude
+# wrapper still resolves `which claude` here without recursion. The rw mounts themselves come from the sysadmin config.toml
 # `mounts` list; see claude-launch-shim.sh for the expected mount paths.
 COPY claude-launch-shim.sh /usr/local/bin/claude
 RUN chmod 0755 /usr/local/bin/claude
@@ -218,9 +218,13 @@ RUN curl -fsSL https://starship.rs/install.sh \
         | sh -s -- --yes --bin-dir /usr/local/bin
 
 # yq: YAML/JSON/XML processor (mikefarah/yq, Go binary). Not in Ubuntu apt,
-# so we fetch the latest release directly into /usr/local/bin.
-RUN curl -fsSL -o /usr/local/bin/yq \
-        https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+# so we fetch the latest release directly into /usr/local/bin. The arch is
+# derived so the image builds correctly on both linux/amd64 and linux/arm64:
+# `dpkg --print-architecture` returns amd64 / arm64, which match yq's release
+# asset suffixes verbatim (yq_linux_amd64 / yq_linux_arm64).
+RUN arch="$(dpkg --print-architecture)" \
+    && curl -fsSL -o /usr/local/bin/yq \
+        "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}" \
     && chmod +x /usr/local/bin/yq
 
 # glow: Charm.sh terminal Markdown renderer. Not in Ubuntu 24.04 noble repos
