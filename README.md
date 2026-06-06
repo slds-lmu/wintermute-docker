@@ -14,6 +14,7 @@ docker/
     ├── Dockerfile         # the image definition
     ├── install_packages.R # R package set + PPM date pin (run from the Dockerfile)
     ├── claude-launch-shim.sh  # live session/memory bridge wrapper for Claude Code
+    ├── gitconfig          # system-wide git config (delta + aliases) → /etc/gitconfig
     ├── zshrc              # interactive shell config for the `yolo` user
     ├── zsh_aliases        # aliases sourced by zshrc
     └── starship-extra.toml  # prompt overrides, merged with the base preset
@@ -87,8 +88,9 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    (`claude-launch-shim.sh`) that live-bridges sessions/memory/history from the
    host under `claude_config=true`; see the comment block in the Dockerfile.
 8. **Shell environment** — zsh + autosuggestions + syntax-highlighting, fzf
-   shell-integration, git-delta wiring in `/etc/gitconfig`, and the `yolo`
-   dotfiles.
+   shell-integration, git wiring in `/etc/gitconfig` (git-delta pager plus the
+   short git aliases — `s`, `co`, `ci`, `lg`, `lo`, `last`, `unstage`, … — and
+   `init.defaultBranch=main` / `pull.rebase=false`), and the `yolo` dotfiles.
 
 ## R packages — repository policy and date pin
 

@@ -1,0 +1,51 @@
+# gitconfig — system-wide git config, installed to /etc/gitconfig.
+# Applies to every user in the image (root + yolo), in any shell, in scripts,
+# and in CI. Users can still override any of this in their own ~/.gitconfig.
+#
+# Deliberately ships NO [user] identity (name/email): that is per-user and must
+# not be baked into a shared image. Set it at container runtime or in ~/.gitconfig.
+#
+# Ported from the user's sysadmin dotfiles (stow/git/.gitconfig).
+
+[init]
+	# New repositories default to `main` (matches modern GitHub default).
+	defaultBranch = main
+
+[pull]
+	# `git pull` performs a merge, not a rebase. Explicit so it survives any
+	# future change in upstream git defaults.
+	rebase = false
+
+# ---- delta (git-delta) ----
+# Side-by-side syntax-highlighted pager for diff/log/show. Installed via apt in
+# the Dockerfile. Falls back to git's default pager if `delta` isn't on PATH.
+[core]
+	pager = delta
+[interactive]
+	# diffFilter runs delta in --color-only mode so `git add -p` and similar
+	# interactive flows get coloured but still parseable diffs.
+	diffFilter = delta --color-only
+[delta]
+	navigate = true       # n / N to jump between files inside the pager
+	line-numbers = true
+	light = false         # dark-terminal palette
+[merge]
+	# zdiff3 = diff3 with smarter common-history grouping. Conflicts show what
+	# BOTH sides changed plus the common ancestor.
+	conflictStyle = zdiff3
+
+# ---- aliases ----
+# Short verbs, usable from any shell / script / CI. Pair with the `g=git` shell
+# alias in .zsh_aliases: `g s`, `g co main`, `g lg`.
+[alias]
+	s = status -sb
+	a = add
+	co = checkout
+	ci = commit
+	push-tags = push origin --tags
+	si = !git submodule init && git submodule update
+	l = log --pretty=format:'%ad | %s%d [%an]' --graph --date=short
+	lo = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cd) %C(bold blue)<%an>%Creset' --abbrev-commit
+	lg = log --oneline --graph --decorate --all
+	last = log -1 HEAD
+	unstage = reset HEAD --

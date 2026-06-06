@@ -236,14 +236,12 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends glow \
     && rm -rf /var/lib/apt/lists/*
 
-# git-delta wiring: configure /etc/gitconfig so every user (root + yolo) gets
-# delta as the pager for `git diff` / `git log -p` / `git show` out of the box,
-# with no per-user dotfile copy needed. Users can still override in ~/.gitconfig.
-RUN git config --system core.pager delta \
-    && git config --system interactive.diffFilter "delta --color-only" \
-    && git config --system delta.navigate true \
-    && git config --system delta.light false \
-    && git config --system merge.conflictStyle zdiff3
+# System-wide git config for every user (root + yolo): delta pager wiring, the
+# short git aliases, and a couple of behavior tweaks. Shipped as a standalone
+# file (like the zsh dotfiles) instead of a stack of `git config --system`
+# commands. See yolobox/gitconfig for the documented contents. Users can still
+# override anything in their own ~/.gitconfig.
+COPY gitconfig /etc/gitconfig
 
 # Ship dotfiles for the unprivileged `yolo` user.
 #   .zshrc        — interactive shell behavior, plugin wiring, prompt init
