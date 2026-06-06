@@ -36,12 +36,17 @@ install.packages(
         .Platform$pkgType, R.Version()$os, R.Version()$arch
     )
 )
-# repo_set (not repo_add): REPLACE the repo set with PPM alone, so PPM is truly
-# the SOLE repo. repo_add would leave pak's default CRAN entry in place, which
-# could let a package missing from the PPM snapshot fall back to a CRAN source
-# compile — the exact behavior the policy above forbids.
-pak::repo_set(
-    PPM = "https://packagemanager.posit.co/cran/__linux__/noble/2026-05-24"
+# Make PPM the SOLE repo by REPLACING the repos option outright, rather than
+# pak::repo_add() which only appends PPM and leaves the default CRAN entry in
+# place — that residual entry could let a package missing from the PPM snapshot
+# fall back to a CRAN source compile, the exact behavior the policy above forbids.
+# (pak has no repo_set/repo_rm; setting options(repos=) is the supported way, and
+# is the canonical Posit/rocker pattern for the __linux__ binary URL.) pak reads
+# getOption("repos"), so this single PPM entry is the only repo it resolves against.
+options(
+    repos = c(
+        PPM = "https://packagemanager.posit.co/cran/__linux__/noble/2026-05-24"
+    )
 )
 pkgs <- c(
     # --- general data-science / dev toolkit ---

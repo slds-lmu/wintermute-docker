@@ -8,7 +8,7 @@ image — **yolobox** — a data-science / dev sandbox layered on top of the ups
 
 ```
 .
-├── CLAUDE.md              # contributor rules for this repo (doc every file, etc.)
+├── CLAUDE.md              # rules
 ├── README.md              # this file
 ├── .github/workflows/     # CI: docker-yolobox.yml (multi-arch build + push)
 └── yolobox/
