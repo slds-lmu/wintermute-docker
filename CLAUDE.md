@@ -3,7 +3,7 @@
 
 ## General
 - Docker should work independently of buildx
-- Check if user-relevant changes should be described in @README.md
+- Keep @README.md in sync for user-relevant changes
 - Never run `docker build` without explicit user confirmation.
 
 ## Document all files 
