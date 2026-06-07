@@ -1,7 +1,13 @@
 # -----------------------------------------------------------------------------
-# Default zshrc shipped in the slds-tools yolobox image.
+# Interactive zsh config shipped in the slds-tools yolobox image.
 # Ported from sysadmin/stow/shell/.zshrc, trimmed to what works inside the
 # container (no cargo / wl-clipboard / host-specific PATH bits).
+#
+# Installed SYSTEM-WIDE as /etc/zsh/zshrc.d/10-slds.zsh and sourced from the
+# stock /etc/zsh/zshrc — NOT as ~/.zshrc. At runtime yolobox bind-mounts a
+# persistent home volume over /home/yolo, which would shadow any dotfile baked
+# into the image's home; living under /etc keeps this config effective. The
+# non-interactive guard below means scripts still pay nothing for it.
 # -----------------------------------------------------------------------------
 
 # ---- non-interactive guard ----
@@ -63,8 +69,12 @@ export LC_NUMERIC=C
 export PATH
 
 # ---- aliases + helper functions ----
-# Aliases live in their own file. Sourced before plugin widgets below so any
-# alias can shadow PATH-resolved commands set up above.
+# Aliases live in their own file, shipped system-wide as /etc/zsh/zsh_aliases
+# (outside the home volume so it can't be shadowed). Sourced before the plugin
+# widgets below so any alias can shadow PATH-resolved commands set up above. A
+# per-user ~/.zsh_aliases, if the user creates one in their home volume, is
+# sourced afterwards so it can extend or override the shipped defaults.
+[[ -f /etc/zsh/zsh_aliases ]] && source /etc/zsh/zsh_aliases
 [[ -f "$HOME/.zsh_aliases" ]] && source "$HOME/.zsh_aliases"
 
 # ---- fzf ----
@@ -99,7 +109,8 @@ export PATH
 command -v zoxide >/dev/null && eval "$(zoxide init zsh)"
 
 # ---- starship prompt ----
-# Cross-shell prompt. Config at ~/.config/starship.toml combines the
-# plain-text-symbols preset (so no Nerd Font is required) with custom format /
-# directory / cmd_duration tweaks.
+# Cross-shell prompt. Config is shipped system-wide as /etc/starship.toml and
+# selected via $STARSHIP_CONFIG (exported in the Dockerfile), so the home-volume
+# mount can't shadow it. It combines the plain-text-symbols preset (no Nerd Font
+# required) with our custom format / directory / cmd_duration tweaks.
 command -v starship >/dev/null && eval "$(starship init zsh)"

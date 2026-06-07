@@ -16,9 +16,9 @@ image — **yolobox** — a data-science / dev sandbox layered on top of the ups
     ├── install_packages.R # R package set + PPM date pin (run from the Dockerfile)
     ├── claude-launch-shim.sh  # live session/memory bridge wrapper for Claude Code
     ├── gitconfig          # system-wide git config (delta + aliases) → /etc/gitconfig
-    ├── zshrc              # interactive shell config for the `yolo` user
-    ├── zsh_aliases        # aliases sourced by zshrc
-    └── starship-extra.toml  # prompt overrides, merged with the base preset
+    ├── zshrc              # interactive shell config → /etc/zsh/zshrc.d/10-slds.zsh
+    ├── zsh_aliases        # aliases sourced by zshrc → /etc/zsh/zsh_aliases
+    └── starship-extra.toml  # prompt overrides, merged with the base preset → /etc/starship.toml
 ```
 
 ## Base image and user model
@@ -93,7 +93,13 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 8. **Shell environment** — zsh + autosuggestions + syntax-highlighting, fzf
    shell-integration, git wiring in `/etc/gitconfig` (git-delta pager plus the
    short git aliases — `s`, `co`, `ci`, `lg`, `lo`, `last`, `unstage`, … — and
-   `init.defaultBranch=main` / `pull.rebase=false`), and the `yolo` dotfiles.
+   `init.defaultBranch=main` / `pull.rebase=false`), and the shell/prompt config.
+   The zsh config (`/etc/zsh/zshrc.d/10-slds.zsh` + `/etc/zsh/zsh_aliases`) and
+   starship prompt (`/etc/starship.toml`, via `$STARSHIP_CONFIG`) are installed
+   **system-wide under `/etc`, not in `/home/yolo`**, because yolobox mounts a
+   persistent home volume over `/home/yolo` at runtime that would shadow any
+   baked-in dotfile. A user-created `~/.zsh_aliases` is still sourced as an
+   override.
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `starship`,

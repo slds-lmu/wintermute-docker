@@ -258,27 +258,35 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # override anything in their own ~/.gitconfig.
 COPY gitconfig /etc/gitconfig
 
-# Ship dotfiles for the unprivileged `yolo` user.
-#   .zshrc        — interactive shell behavior, plugin wiring, prompt init
-#   .zsh_aliases  — sourced by .zshrc; ls/grep colors, R alias, gccm helpers
-# The starship config is composed at build time: the plain-text-symbols preset
-# (so no Nerd Font is required) is concatenated with starship-extra.toml (the
-# user's format / directory / cmd_duration overrides). All files are owned by
-# yolo:yolo so the user can edit them at runtime.
-# Also drop ~/.parallel/will-cite so GNU parallel skips its first-run citation
-# nag for non-interactive scripts (`parallel --citation` accepts the same thing).
-COPY --chown=yolo:yolo zshrc        /home/yolo/.zshrc
-COPY --chown=yolo:yolo zsh_aliases  /home/yolo/.zsh_aliases
-COPY                  starship-extra.toml /tmp/starship-extra.toml
-RUN install -d -o yolo -g yolo /home/yolo/.config \
+# Ship the interactive shell + prompt config SYSTEM-WIDE (under /etc), NOT into
+# /home/yolo. At runtime yolobox bind-mounts a persistent home volume over
+# /home/yolo, which shadows any dotfile baked into the image's home — so a baked
+# ~/.zshrc / ~/.zsh_aliases / ~/.config/starship.toml would silently never load.
+# Installing under /etc keeps them effective regardless of the volume:
+#   /etc/zsh/zshrc.d/10-slds.zsh — interactive behavior, plugin wiring, prompt
+#   /etc/zsh/zsh_aliases         — ls/grep colors, R alias, git/gccm helpers
+#   /etc/starship.toml           — composed prompt config (see STARSHIP_CONFIG)
+# These are root-owned system files; a user wanting to customize drops their own
+# ~/.zsh_aliases in the home volume (still sourced by our zshrc as an override).
+COPY zshrc        /etc/zsh/zshrc.d/10-slds.zsh
+COPY zsh_aliases  /etc/zsh/zsh_aliases
+COPY starship-extra.toml /tmp/starship-extra.toml
+# The stock /etc/zsh/zshrc does not read any drop-in dir, so append a tiny
+# loader that sources /etc/zsh/zshrc.d/*.zsh for every interactive shell. We
+# append (not overwrite) to preserve the distro keybindings/compinit; (N) is the
+# null-glob qualifier so an empty dir is not an error.
+RUN printf '\n# ---- slds drop-ins (added by the slds-yolobox image) ----\nfor _f in /etc/zsh/zshrc.d/*.zsh(N); do source "$_f"; done\nunset _f\n' >> /etc/zsh/zshrc \
+    # Compose the starship prompt config: the plain-text-symbols preset (no Nerd
+    # Font required) concatenated with starship-extra.toml (our format /
+    # directory / cmd_duration overrides). Written to /etc so the home-volume
+    # mount can't shadow it; surfaced to starship via ENV STARSHIP_CONFIG below.
     && starship preset plain-text-symbols -o /tmp/starship-base.toml \
-    && cat /tmp/starship-base.toml /tmp/starship-extra.toml \
-        > /home/yolo/.config/starship.toml \
-    && chown yolo:yolo /home/yolo/.config/starship.toml \
+    && cat /tmp/starship-base.toml /tmp/starship-extra.toml > /etc/starship.toml \
     && rm /tmp/starship-base.toml /tmp/starship-extra.toml \
-    && install -d -o yolo -g yolo /home/yolo/.parallel \
-    && touch /home/yolo/.parallel/will-cite \
-    && chown yolo:yolo /home/yolo/.parallel/will-cite \
+    # Make zsh the login shell for `yolo` (edits /etc/passwd, outside the home
+    # volume, so it survives). Note: GNU parallel's first-run citation nag is
+    # per-user state under $HOME/.parallel (no system-wide path), so it cannot be
+    # silenced image-wide here — it is left to first-run / the user.
     && chsh -s /bin/zsh yolo
 
 # SHELL=/bin/zsh exposes the chosen interactive shell to subprocesses (tmux,
@@ -287,8 +295,11 @@ RUN install -d -o yolo -g yolo /home/yolo/.config \
 # regardless of LANG. Set at the Docker layer so even non-interactive shells
 # (Rscript invoked from cron, scripts launched via `zsh -c`) inherit it; the
 # .zshrc also exports it as a belt-and-braces for shells that bypass ENV.
+# STARSHIP_CONFIG points starship at the system-wide /etc/starship.toml composed
+# above, so the prompt config survives the home-volume mount over /home/yolo.
 ENV SHELL=/bin/zsh \
-    LC_NUMERIC=C
+    LC_NUMERIC=C \
+    STARSHIP_CONFIG=/etc/starship.toml
 
 # Restore the unprivileged default user from the upstream image so containers
 # launched from this image keep dropping privileges by default.
