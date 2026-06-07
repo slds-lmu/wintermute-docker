@@ -193,8 +193,19 @@ RUN rm -f /usr/local/bin/claude \
 # dir — see the shim's candidate probe), so the upstream /opt/yolobox/bin/claude
 # wrapper still resolves `which claude` here without recursion. The rw mounts themselves come from the sysadmin config.toml
 # `mounts` list; see claude-launch-shim.sh for the expected mount paths.
-COPY claude-launch-shim.sh /usr/local/bin/claude
-RUN chmod 0755 /usr/local/bin/claude
+# CRITICAL: `/usr/local/bin/claude` is the npm-created SYMLINK pointing at the
+# package's real entry point (.../claude-code/bin/claude.exe). `COPY`-ing onto
+# that path FOLLOWS the symlink and overwrites its target — i.e. it would clobber
+# the real ~245 MB Claude binary with this small shim. The shim then probes for
+# the real binary, finds only itself at bin/claude.exe, and exec-loops forever
+# (a silent CPU-pegging hang at launch). So we must NOT write through the symlink.
+# Instead: stage the shim at a neutral path, delete the symlink, then move the
+# shim into its place as a regular file. bin/claude.exe stays the real binary,
+# which the shim resolves and execs.
+COPY claude-launch-shim.sh /usr/local/bin/claude.shim
+RUN rm -f /usr/local/bin/claude \
+    && mv /usr/local/bin/claude.shim /usr/local/bin/claude \
+    && chmod 0755 /usr/local/bin/claude
 
 # Interactive shell setup: zsh + plugins + starship prompt.
 # The upstream yolobox base ships fzf but its
