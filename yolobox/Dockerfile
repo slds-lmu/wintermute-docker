@@ -277,11 +277,17 @@ COPY starship-extra.toml /tmp/starship-extra.toml
 # null-glob qualifier so an empty dir is not an error.
 RUN printf '\n# ---- slds drop-ins (added by the slds-yolobox image) ----\nfor _f in /etc/zsh/zshrc.d/*.zsh(N); do source "$_f"; done\nunset _f\n' >> /etc/zsh/zshrc \
     # Compose the starship prompt config: the plain-text-symbols preset (no Nerd
-    # Font required) concatenated with starship-extra.toml (our format /
-    # directory / cmd_duration overrides). Written to /etc so the home-volume
+    # Font required) deep-merged with starship-extra.toml (our format /
+    # directory / cmd_duration overrides). We must MERGE, not `cat`: both files
+    # define a `[directory]` table (the preset sets `read_only`, our extra sets
+    # truncation), and two `[directory]` headers in one file is a TOML
+    # `duplicate key` error that makes starship reject the WHOLE config and fall
+    # back to its default prompt. `yq` (installed above) deep-merges the tables
+    # so colliding sections fold into one. Written to /etc so the home-volume
     # mount can't shadow it; surfaced to starship via ENV STARSHIP_CONFIG below.
     && starship preset plain-text-symbols -o /tmp/starship-base.toml \
-    && cat /tmp/starship-base.toml /tmp/starship-extra.toml > /etc/starship.toml \
+    && yq eval-all -p toml -o toml 'select(fileIndex==0) * select(fileIndex==1)' \
+        /tmp/starship-base.toml /tmp/starship-extra.toml > /etc/starship.toml \
     && rm /tmp/starship-base.toml /tmp/starship-extra.toml \
     # Make zsh the login shell for `yolo` (edits /etc/passwd, outside the home
     # volume, so it survives). Note: GNU parallel's first-run citation nag is
