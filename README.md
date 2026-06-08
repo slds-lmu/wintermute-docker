@@ -91,24 +91,19 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    (`claude-launch-shim.sh`) that live-bridges sessions/memory/history from the
    host under `claude_config=true`; see the comment block in the Dockerfile.
 8. **Shell environment** — zsh + autosuggestions + syntax-highlighting, fzf
-   shell-integration, git wiring in `/etc/gitconfig` (git-delta pager plus the
-   short git aliases — `s`, `co`, `ci`, `lg`, `lo`, `last`, `unstage`, … — and
-   `init.defaultBranch=main` / `pull.rebase=false`), and the shell/prompt config.
-   The zsh config (`/etc/zsh/zshrc.d/10-slds.zsh` + `/etc/zsh/zsh_aliases`) and
-   starship prompt (`/etc/starship.toml`, via `$STARSHIP_CONFIG`) are installed
-   **system-wide under `/etc`, not in `/home/yolo`**, because yolobox mounts a
-   persistent home volume over `/home/yolo` at runtime that would shadow any
-   baked-in dotfile. A user-created `~/.zsh_aliases` is still sourced as an
-   override. Because that same empty home volume also means zsh finds no user
-   startup files on first launch — which would trigger zsh's built-in
-   `zsh-newuser-install` wizard — `/etc/zsh/zshenv` seeds an empty `~/.zshrc` on
-   first interactive start (guarded; never clobbers a real one) to suppress it.
-   **zsh is the effective interactive shell even via `yolobox shell`**:
-   that subcommand launches bash directly (bypassing the `yolo` login shell, and
-   yolobox has no shell-selection flag), so `/etc/bash.bashrc` carries a guarded
-   handoff that `exec`s interactive bash into `zsh -l`. Non-interactive `bash -c`
-   (scripts, the agent's tool calls, the claude shim) does not read that file and
-   is untouched; `NO_ZSH=1 bash` is the escape hatch back to plain bash.
+   shell-integration, git wiring in `/etc/gitconfig`.
+   
+   Also wired up in the interactive shell:
+   - **Aliases** (`/etc/zsh/zsh_aliases`): `g` = git, `R` = `R --no-save
+     --no-restore-data --quiet` (quiet REPL startup), `ll`/`la`, human-readable
+     `du`/`df`, `mkdir -p`, and colorized `ls`/`grep`; plus a `count-files` helper
+     that tallies entries under each dir in the cwd.
+   - **`EDITOR` / `VISUAL` = `vim`** — honored by git, crontab, sudoedit, etc.
+   - **`LC_NUMERIC=C`** — forces `.` as the decimal separator for R / scripts
+     regardless of `LANG`. Set both as a Docker `ENV` (so non-interactive `Rscript`
+     / cron inherit it) and re-exported in the zsh config.
+   - **`~/.local/bin` prepended to `PATH`** — user-scope installs (`uv tool`, pipx,
+     ad-hoc scripts) win over their system equivalents.
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `starship`,
@@ -141,6 +136,20 @@ it per-project with `uv` (`uv venv --python <X>`, `.python-version`).
 The image **does not ship a global scientific Python stack.**
 Instead, projects create their own pinned environments — a per-project `uv` venv, or a `.yolobox`
 Dockerfile fragment (see *Per-project customization* below).
+
+
+## Persistent volume
+
+**`/home/yolo` is a persistent volume**, mounted by yolobox at runtime. It
+survives container restarts *and* relaunches onto a freshly-pulled image; the
+rest of the container filesystem is ephemeral and resets every launch. So any
+state under `$HOME` carries over between sessions — shell history, dotfiles you
+create, Claude session/memory, and tool databases such as **zoxide**'s
+(`~/.local/share/zoxide/db.zo`, which is why `z` keeps learning across runs).
+The flip side: this empty volume **shadows any dotfile baked into the image**
+at `/home/yolo`, which is why our shell/prompt config is installed under `/etc`
+instead (see *What's installed → Shell environment*).
+
 
 ## Per-project customization (downstream users)
 

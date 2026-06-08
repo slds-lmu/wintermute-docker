@@ -10,7 +10,10 @@
 
 # Two-line prompt: info on top, just `$` on the line you type on.
 # Avoids the prompt running off the right when paths get long.
+# Leads with the yolobox badge (see [custom.yolobox]) so it is obvious at a
+# glance that this shell is inside the sandbox.
 format = """
+${custom.yolobox}\
 $directory\
 $git_branch\
 $git_status\
@@ -20,6 +23,17 @@ $nodejs\
 $cmd_duration\
 $line_break\
 $character"""
+
+# Badge that marks a shell running inside the yolobox sandbox. yolobox exports
+# YOLOBOX=1, so `when` lights the module up only in the box and leaves the prompt
+# untouched when this same config is used elsewhere (it is ported from sysadmin
+# dotfiles). starship 1.25's custom modules have no `detect_env_vars`, so we gate
+# on a tiny `test` instead. 🎲 is yolobox's own mark (its banner/MOTD use it).
+[custom.yolobox]
+description = "Show a badge when inside the yolobox sandbox (YOLOBOX env var)"
+when = "test -n \"$YOLOBOX\""
+format = "[🎲 yolobox]($style) "
+style = "bold yellow"
 
 # Don't show duration for fast commands.
 [cmd_duration]

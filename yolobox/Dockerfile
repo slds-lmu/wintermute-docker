@@ -169,8 +169,6 @@ RUN curl -LsSf https://github.com/posit-dev/air/releases/latest/download/air-ins
 # CLAUDE_CACHE_BUST: Docker caches RUN lines by literal text, so without a
 # cache-busting arg the `@latest` resolves once and then sticks forever. Bump
 # this (or pass `--build-arg CLAUDE_CACHE_BUST=$(date +%s)`) to force re-pull.
-#
-# The `gccm-gen` alias in zsh_aliases depends on `claude -p` being on PATH.
 ARG CLAUDE_CACHE_BUST=1
 RUN rm -f /usr/local/bin/claude \
     && npm install -g --prefix=/usr/local @anthropic-ai/claude-code@latest \
@@ -264,7 +262,7 @@ COPY gitconfig /etc/gitconfig
 # ~/.zshrc / ~/.zsh_aliases / ~/.config/starship.toml would silently never load.
 # Installing under /etc keeps them effective regardless of the volume:
 #   /etc/zsh/zshrc.d/10-slds.zsh — interactive behavior, plugin wiring, prompt
-#   /etc/zsh/zsh_aliases         — ls/grep colors, R alias, git/gccm helpers
+#   /etc/zsh/zsh_aliases         — ls/grep colors, R alias, g=git, count-files
 #   /etc/starship.toml           — composed prompt config (see STARSHIP_CONFIG)
 # These are root-owned system files; a user wanting to customize drops their own
 # ~/.zsh_aliases in the home volume (still sourced by our zshrc as an override).

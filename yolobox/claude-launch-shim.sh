@@ -88,7 +88,7 @@ done
 # ── Live session / memory / history bridge ──────────────────────────────────
 # Swap each dead snapshot copy for a symlink to its rw host mount. The `! -L`
 # guard makes each idempotent across the many `claude` invocations in one boot
-# (e.g. `claude -p` from the gccm alias): once swapped to a symlink, later
+# (e.g. repeated non-interactive `claude -p` calls from scripts): once swapped to a symlink, later
 # launches skip it. Each `rm` only ever removes the container-local snapshot
 # copy — never the host data, which lives at the /host-claude-* mount the
 # symlink points to.
