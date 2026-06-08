@@ -184,10 +184,25 @@ before the real binary on every `claude` invocation. It does two jobs:
 Without those mounts the shim is a transparent no-op and the dead snapshot copies
 are used as-is. **Not bridged:** plugins (snapshot copy, only path-fixed).
 
+**Caveat — the bridge only exists under a `claude` launch.** Because the symlink
+swap lives in the shim (and the shim only runs when `claude` is invoked), entering
+the box any *other* way — e.g. `yolobox shell` — gives you the boot snapshot but
+**no live bridge**: `~/.claude/projects` stays a plain copied directory, writes
+land only in the container, and they vanish on teardown. This is the intended
+behavior, but it's a trap when *testing* persistence: a sentinel written from a
+`yolobox shell` will (correctly) fail to reach the host. To verify the bridge,
+test from a **Claude-launched** box — there `~/.claude/projects` is a symlink to
+`/host-claude-sessions` and box-side writes show up on the host immediately.
+
 **Launch chain.** `claude` → `/opt/yolobox/bin/claude` (upstream wrapper, adds
-`--dangerously-skip-permissions`) → `/usr/local/bin/claude` (this shim) → the
-real entry point under the npm package dir. The shim probes the package for the
-entry point (it has been renamed across releases) and fails loudly if none match.
+`--dangerously-skip-permissions`; strips itself from `PATH`, then re-runs `which
+claude`) → `~/.local/bin/claude` (a **symlink to the shim, and the first `claude`
+match on `PATH`** — this is why `which -a claude` shows three entries) →
+`/usr/local/bin/claude` (this shim) → the real entry point under the npm package
+dir. The override must replace `/usr/local/bin/claude` specifically (the symlink's
+target); see the Dockerfile's Claude Code block for why. The shim probes the
+package for the entry point (it has been renamed across releases) and fails loudly
+if none match.
 
 ## Persistent volume
 
