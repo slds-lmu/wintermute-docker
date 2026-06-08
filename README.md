@@ -99,7 +99,12 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    **system-wide under `/etc`, not in `/home/yolo`**, because yolobox mounts a
    persistent home volume over `/home/yolo` at runtime that would shadow any
    baked-in dotfile. A user-created `~/.zsh_aliases` is still sourced as an
-   override.
+   override. **zsh is the effective interactive shell even via `yolobox shell`**:
+   that subcommand launches bash directly (bypassing the `yolo` login shell, and
+   yolobox has no shell-selection flag), so `/etc/bash.bashrc` carries a guarded
+   handoff that `exec`s interactive bash into `zsh -l`. Non-interactive `bash -c`
+   (scripts, the agent's tool calls, the claude shim) does not read that file and
+   is untouched; `NO_ZSH=1 bash` is the escape hatch back to plain bash.
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `starship`,

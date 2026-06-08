@@ -287,7 +287,29 @@ RUN printf '\n# ---- slds drop-ins (added by the slds-yolobox image) ----\nfor _
     # volume, so it survives). Note: GNU parallel's first-run citation nag is
     # per-user state under $HOME/.parallel (no system-wide path), so it cannot be
     # silenced image-wide here — it is left to first-run / the user.
-    && chsh -s /bin/zsh yolo
+    && chsh -s /bin/zsh yolo \
+    # Hand interactive bash off to zsh. `yolobox shell` launches bash directly,
+    # bypassing the zsh login shell set above (yolobox has no shell-selection
+    # flag), so without this an interactive bash gets none of our aliases /
+    # functions / prompt / plugins (all zsh-only under /etc/zsh). Appended to
+    # /etc/bash.bashrc, which BOTH interactive login bash (via /etc/profile) and
+    # interactive non-login bash source. The `case $- in *i*)` guard fires ONLY
+    # for interactive shells — non-interactive `bash -c` (the agent's tool calls,
+    # the claude shim, scripts) does not read this file at all and is untouched.
+    # `exec` replaces the process so there's no lingering bash. Escape hatch:
+    # `NO_ZSH=1 bash` (or any non-interactive bash) stays in bash.
+    && printf '%s\n' \
+        '' \
+        '# Hand interactive bash off to zsh (the configured shell); see Dockerfile.' \
+        'case $- in' \
+        '  *i*)' \
+        '    if [ -z "$ZSH_VERSION" ] && [ -z "$NO_ZSH" ] && [ -x /usr/bin/zsh ]; then' \
+        '      export SHELL=/usr/bin/zsh' \
+        '      exec /usr/bin/zsh -l' \
+        '    fi' \
+        '    ;;' \
+        'esac' \
+        >> /etc/bash.bashrc
 
 # SHELL=/bin/zsh exposes the chosen interactive shell to subprocesses (tmux,
 # git, sub-shells) so they pick zsh as well.
