@@ -16,14 +16,3 @@ alias grep='grep --color=auto'
 # ---- R ----
 # Cleaner startup: no save/restore prompts, no version banner.
 alias R='R --no-save --no-restore-data --quiet'
-
-# ---- git ----
-# Short verbs live in ~/.gitconfig under [alias] so they work in any shell.
-alias g='git'
-
-# ---- count-files ----
-# Per top-level entry in cwd, print path + count of all filesystem entries
-# (files + dirs) beneath it. First line is grand total for cwd. No args.
-count-files() {
-  find . -maxdepth 1 -type d -exec sh -c 'echo "{}"; find "{}" | wc -l' \;
-}

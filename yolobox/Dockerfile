@@ -185,8 +185,10 @@ RUN rm -f /usr/local/bin/claude \
 #   2. Bridges the dirs we want LIVE by symlinking them to rw host mounts staged
 #      at /host-claude-* (outside ~/.claude, so the entrypoint's `rm -rf` can't
 #      clobber the host data): ~/.claude/projects (sessions + per-project
-#      memory) and ~/.claude/history.jsonl (prompt history).
-# Credentials are NOT bridged — the snapshot copy is enough.
+#      memory), ~/.claude/history.jsonl (prompt history), and
+#      ~/.claude/.credentials.json (so a token refreshed/rotated in-box writes
+#      back to the host instead of being lost — otherwise you get re-prompted
+#      to /login each boot).
 # The shim execs the real binary by absolute path (resolved from the npm package
 # dir — see the shim's candidate probe), so the upstream /opt/yolobox/bin/claude
 # wrapper still resolves `which claude` here without recursion. The rw mounts themselves come from the sysadmin config.toml
@@ -249,11 +251,11 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends glow \
     && rm -rf /var/lib/apt/lists/*
 
-# System-wide git config for every user (root + yolo): delta pager wiring, the
-# short git aliases, and a couple of behavior tweaks. Shipped as a standalone
-# file (like the zsh dotfiles) instead of a stack of `git config --system`
-# commands. See yolobox/gitconfig for the documented contents. Users can still
-# override anything in their own ~/.gitconfig.
+# System-wide git config for every user (root + yolo): delta pager wiring plus a
+# couple of behavior tweaks (init.defaultBranch, pull.rebase, merge.conflictStyle).
+# Shipped as a standalone file (like the zsh dotfiles) instead of a stack of
+# `git config --system` commands. See yolobox/gitconfig for the documented
+# contents. Users can still override anything in their own ~/.gitconfig.
 COPY gitconfig /etc/gitconfig
 
 # Ship the interactive shell + prompt config SYSTEM-WIDE (under /etc), NOT into
@@ -262,7 +264,7 @@ COPY gitconfig /etc/gitconfig
 # ~/.zshrc / ~/.zsh_aliases / ~/.config/starship.toml would silently never load.
 # Installing under /etc keeps them effective regardless of the volume:
 #   /etc/zsh/zshrc.d/10-slds.zsh — interactive behavior, plugin wiring, prompt
-#   /etc/zsh/zsh_aliases         — ls/grep colors, R alias, g=git, count-files
+#   /etc/zsh/zsh_aliases         — ls/grep colors, R alias
 #   /etc/starship.toml           — composed prompt config (see STARSHIP_CONFIG)
 # These are root-owned system files; a user wanting to customize drops their own
 # ~/.zsh_aliases in the home volume (still sourced by our zshrc as an override).

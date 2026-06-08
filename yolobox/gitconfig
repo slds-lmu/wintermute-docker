@@ -33,19 +33,3 @@
 	# zdiff3 = diff3 with smarter common-history grouping. Conflicts show what
 	# BOTH sides changed plus the common ancestor.
 	conflictStyle = zdiff3
-
-# ---- aliases ----
-# Short verbs, usable from any shell / script / CI. Pair with the `g=git` shell
-# alias in .zsh_aliases: `g s`, `g co main`, `g lg`.
-[alias]
-	s = status -sb
-	a = add
-	co = checkout
-	ci = commit
-	push-tags = push origin --tags
-	si = !git submodule init && git submodule update
-	l = log --pretty=format:'%ad | %s%d [%an]' --graph --date=short
-	lo = log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cd) %C(bold blue)<%an>%Creset' --abbrev-commit
-	lg = log --oneline --graph --decorate --all
-	last = log -1 HEAD
-	unstage = reset HEAD --

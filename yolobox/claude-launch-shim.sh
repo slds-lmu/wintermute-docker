@@ -44,10 +44,14 @@
 #   Without those mounts this shim is a transparent no-op and the dead snapshot
 #   copies are used as-is.
 #
+# Bridged too: credentials
+#   Claude refreshes (and may rotate) its OAuth token mid-session; a read-only
+#   snapshot would lose that write on teardown, so the next boot re-snapshots an
+#   aging host token and drops you to /login. So .credentials.json is bridged rw
+#   like the dirs above — see the credentials block below.
+#
 # Not bridged
-#   Credentials come straight from the claude_config snapshot (read-only is
-#   fine — the token works until expiry), so they need no live mount. Plugins
-#   are not live either: the snapshot copy is used as-is, only path-fixed.
+#   Plugins are not live: the snapshot copy is used as-is, only path-fixed.
 #
 # Launch chain
 #   `claude` -> /opt/yolobox/bin/claude (upstream wrapper, adds
@@ -88,7 +92,7 @@ done
 # ── Live session / memory / history bridge ──────────────────────────────────
 # Swap each dead snapshot copy for a symlink to its rw host mount. The `! -L`
 # guard makes each idempotent across the many `claude` invocations in one boot
-# (e.g. repeated non-interactive `claude -p` calls from scripts): once swapped to a symlink, later
+# (e.g. repeated non-interactive `claude -p` calls): once swapped to a symlink, later
 # launches skip it. Each `rm` only ever removes the container-local snapshot
 # copy — never the host data, which lives at the /host-claude-* mount the
 # symlink points to.
@@ -99,6 +103,18 @@ fi
 if [ -e /host-claude-history.jsonl ] && [ ! -L "$HOME/.claude/history.jsonl" ]; then
   rm -f "$HOME/.claude/history.jsonl"
   ln -s /host-claude-history.jsonl "$HOME/.claude/history.jsonl"
+fi
+
+# ── Live credentials bridge ─────────────────────────────────────────────────
+# Same swap, but the point is write-back: Claude refreshes its OAuth access
+# token (and may rotate the refresh token) and writes the new value to
+# ~/.claude/.credentials.json. Pointing that at the rw host mount makes the
+# write land on the host, so the next boot starts from a current token instead
+# of the aging snapshot — without this you get dropped to /login. Same `! -L`
+# idempotency, and the `rm` only removes the container-local snapshot copy.
+if [ -e /host-claude-credentials.json ] && [ ! -L "$HOME/.claude/.credentials.json" ]; then
+  rm -f "$HOME/.claude/.credentials.json"
+  ln -s /host-claude-credentials.json "$HOME/.claude/.credentials.json"
 fi
 
 exec "$REAL" "$@"
