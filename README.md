@@ -99,7 +99,11 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    **system-wide under `/etc`, not in `/home/yolo`**, because yolobox mounts a
    persistent home volume over `/home/yolo` at runtime that would shadow any
    baked-in dotfile. A user-created `~/.zsh_aliases` is still sourced as an
-   override. **zsh is the effective interactive shell even via `yolobox shell`**:
+   override. Because that same empty home volume also means zsh finds no user
+   startup files on first launch — which would trigger zsh's built-in
+   `zsh-newuser-install` wizard — `/etc/zsh/zshenv` seeds an empty `~/.zshrc` on
+   first interactive start (guarded; never clobbers a real one) to suppress it.
+   **zsh is the effective interactive shell even via `yolobox shell`**:
    that subcommand launches bash directly (bypassing the `yolo` login shell, and
    yolobox has no shell-selection flag), so `/etc/bash.bashrc` carries a guarded
    handoff that `exec`s interactive bash into `zsh -l`. Non-interactive `bash -c`

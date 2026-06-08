@@ -276,6 +276,17 @@ COPY starship-extra.toml /tmp/starship-extra.toml
 # append (not overwrite) to preserve the distro keybindings/compinit; (N) is the
 # null-glob qualifier so an empty dir is not an error.
 RUN printf '\n# ---- slds drop-ins (added by the slds-yolobox image) ----\nfor _f in /etc/zsh/zshrc.d/*.zsh(N); do source "$_f"; done\nunset _f\n' >> /etc/zsh/zshrc \
+    # Suppress zsh's built-in new-user wizard (`zsh-newuser-install`). zsh fires
+    # it for any interactive shell whose user has NONE of ~/.zshenv ~/.zprofile
+    # ~/.zshrc ~/.zlogin. yolobox mounts an EMPTY persistent volume over
+    # /home/yolo at runtime, shadowing any dotfile we bake into the image, so on
+    # first launch zsh sees a "new user" and prompts the wizard. No config edit
+    # disables it — zsh requires an actual startup file in $HOME — so seed an
+    # empty ~/.zshrc live from /etc/zsh/zshenv (sourced FIRST, before the wizard
+    # check). Guarded: only for interactive shells, and never clobbers a real
+    # user ~/.zshrc. All real config stays system-wide in /etc/zsh; this stub is
+    # just the user's personal override point (sourced after the system zshrc).
+    && printf '\n# Seed an empty ~/.zshrc on first interactive start so zsh-newuser-install\n# does not prompt on the empty /home/yolo volume (see Dockerfile). Never\n# clobbers a real user file; all system config lives in /etc/zsh.\n[[ -o interactive && ! -e ${ZDOTDIR:-$HOME}/.zshrc ]] && : > ${ZDOTDIR:-$HOME}/.zshrc 2>/dev/null\n' >> /etc/zsh/zshenv \
     # Compose the starship prompt config: the plain-text-symbols preset (no Nerd
     # Font required) deep-merged with starship-extra.toml (our format /
     # directory / cmd_duration overrides). We must MERGE, not `cat`: both files
