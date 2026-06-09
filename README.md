@@ -150,11 +150,15 @@ the box would vanish on teardown (and re-snapshot fresh next launch — they are
 **`claude-launch-shim.sh`** is installed at `/usr/local/bin/claude` and runs
 before the real binary on every `claude` invocation. It does two jobs:
 
-1. **Plugin path fixup.** The snapshot copies plugin *content* in, but the plugin
-   registry locates each plugin by an absolute *host* path that doesn't exist in
-   the container, so the plugins would silently fail to load. The shim rewrites
-   those paths to the container `$HOME`. (Standalone skills under
-   `~/.claude/skills` are dir-scanned and need no fixup.)
+1. **Plugin path fixup (two layers).** The snapshot copies plugin *content* in,
+   but the registry locates each plugin by an absolute *host* path that doesn't
+   exist in the container, so plugins would silently fail to load. The shim
+   (a) rewrites those paths to the container `$HOME` — best-effort, since Claude
+   regenerates the registry on startup and reintroduces the host paths — and
+   (b) creates a regeneration-proof compat symlink (`<host-prefix>/.claude/plugins`
+   → `$HOME/.claude/plugins`) via passwordless `sudo`, so the host path resolves
+   no matter what the registry says. Without sudo it falls back to (a) alone.
+   (Standalone skills under `~/.claude/skills` are dir-scanned and need no fixup.)
 
 2. **Live host bridge.** For the dirs we want two-way, the host bind-mounts them
    read-write *outside* `~/.claude` (so the entrypoint's `rm -rf` can't reach
@@ -182,7 +186,8 @@ before the real binary on every `claude` invocation. It does two jobs:
 ```
 
 Without those mounts the shim is a transparent no-op and the dead snapshot copies
-are used as-is. **Not bridged:** plugins (snapshot copy, only path-fixed).
+are used as-is. **Not bridged:** plugins (snapshot copy, path-fixed and
+compat-symlinked).
 
 **Caveat — the bridge only exists under a `claude` launch.** Because the symlink
 swap lives in the shim (and the shim only runs when `claude` is invoked), entering
