@@ -76,18 +76,63 @@ done
   exit 127
 }
 
-# ── Plugin registry path fixup ──────────────────────────────────────────────
-# Repoint the snapshotted registry from the embedded host paths to the
-# container home, so the plugin content the snapshot already copied in actually
-# loads. Anchoring the match on the opening quote rewrites only the leading dir
-# of each JSON string value, and the prefix is read from the file itself, so any
-# host user / OS layout (/home/<user>, /Users/<user>, …) is handled. Idempotent:
-# after a rewrite the value already starts at $HOME, so re-runs replace it with
-# itself — safe to run on every `claude` invocation in a boot.
-for f in "$HOME/.claude/plugins/installed_plugins.json" \
-         "$HOME/.claude/plugins/known_marketplaces.json"; do
-  [ -f "$f" ] && sed -E -i "s#\"[^\"]*/\.claude/plugins#\"$HOME/.claude/plugins#g" "$f"
-done
+# ── Plugin path fixup ───────────────────────────────────────────────────────
+# The snapshot copies plugin content in, but the registry locates each plugin by
+# an ABSOLUTE host path (/home/<host-user>/.claude/plugins/…) that does not exist
+# in this container. Standalone skills under ~/.claude/skills are dir-scanned and
+# unaffected; plugins are path-addressed. We apply TWO layers, because the first
+# alone does not hold:
+#
+#   (a) Best-effort rewrite of the host prefix to $HOME in the registry files.
+#       This does NOT reliably stick: Claude's plugin subsystem regenerates the
+#       registry on startup — AFTER this shim has exec'd into claude — and
+#       re-introduces the host paths. The regeneration source is not the catalog
+#       cache or ~/.claude.json (both checked); it was observed flipping an
+#       already-fixed registry back to /home/<host-user> mid-session. Kept
+#       anyway: it's free, it fixes the paths for anything that reads them before
+#       the regeneration, and it is the only layer available when sudo is absent.
+#
+#   (b) Regeneration-proof compat symlink: make the host path itself RESOLVE in
+#       the container, so it no longer matters what the registry says or how many
+#       times Claude rewrites it. We point
+#         <host-prefix>/.claude/plugins -> $HOME/.claude/plugins
+#       The host prefix is detected from the registry (any /home/<user>,
+#       /Users/<user>, … layout), BEFORE (a) rewrites it away. /home is
+#       root-owned, so creating the path needs sudo (passwordless in yolobox); if
+#       sudo is unavailable we silently fall back to (a) alone. /home/<host-user>
+#       lives in the ephemeral container fs, so the link is recreated each boot.
+#
+# Why bother when plugins currently load fine? Current Claude Code resolves
+# plugin content RELATIVE to ~/.claude/plugins, so today the stale absolute path
+# is tolerated and skills load (verified). (b) is hardening: if a future release
+# honors absolute registry paths strictly, (a) alone would break in-box plugins
+# on every regeneration — (b) keeps them working regardless.
+plugdir="$HOME/.claude/plugins"
+if [ -d "$plugdir" ]; then
+  reg_installed="$plugdir/installed_plugins.json"
+  reg_markets="$plugdir/known_marketplaces.json"
+
+  # Detect the embedded host prefix BEFORE rewriting (the rewrite would erase it).
+  host_prefix=$(grep -hoE '"/[^"]*/\.claude/plugins' "$reg_installed" "$reg_markets" 2>/dev/null \
+                | sed -E 's#^"##; s#/\.claude/plugins$##' | grep -vx "$HOME" | head -1)
+
+  # (a) best-effort rewrite of the registry files to the container home.
+  for f in "$reg_installed" "$reg_markets"; do
+    [ -f "$f" ] && sed -E -i "s#\"[^\"]*/\.claude/plugins#\"$HOME/.claude/plugins#g" "$f"
+  done
+
+  # (b) regeneration-proof compat symlink, via sudo (best-effort, never fatal).
+  # The case-glob guards against an empty / single-component / $HOME prefix.
+  case "$host_prefix" in
+    /?*/?*)
+      if [ "$host_prefix" != "$HOME" ] && [ ! -e "$host_prefix/.claude/plugins" ] \
+         && sudo -n true 2>/dev/null; then
+        sudo mkdir -p "$host_prefix/.claude" 2>/dev/null \
+          && sudo ln -sfn "$plugdir" "$host_prefix/.claude/plugins" 2>/dev/null
+      fi
+      ;;
+  esac
+fi
 
 # ── Live session / memory / history bridge ──────────────────────────────────
 # Swap each dead snapshot copy for a symlink to its rw host mount. The `! -L`
