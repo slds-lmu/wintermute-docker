@@ -46,7 +46,7 @@ digests into one multi-arch manifest under the human-readable tags.
 |-------|--------------|
 | push to `main` touching `yolobox/**` or the workflow | build **+ push** |
 | pull request to `main` (same path filter) | build **only** (no push — fail fast on either arch) |
-| manual `workflow_dispatch` | build **+ push** |
+| manual `workflow_dispatch` | build **+ push**; `refresh_claude` input (default **true**) busts the Claude Code layer so `@latest` is re-pulled |
 | weekly cron (Sun 03:00 UTC) | bump R PPM date + **no-cache** rebuild + push + commit the bump |
 
 **Tags pushed** (default branch): `:latest` (moves every build), `:<git-sha>`
@@ -57,6 +57,15 @@ digests into one multi-arch manifest under the human-readable tags.
 on success commits the date bump back to `main` with `[skip ci]`. See *Bumping the
 R snapshot date* below — the cron automates exactly that edit. No secrets are
 needed; the per-run `GITHUB_TOKEN` is sufficient for ghcr.io pushes.
+
+**Updating Claude Code in the published image:** trigger a manual run —
+`gh workflow run docker-yolobox.yml` or the *Run workflow* button in the
+Actions tab. The dispatch input `refresh_claude` defaults to **true**, which
+passes a unique `CLAUDE_CACHE_BUST` build-arg so the Claude Code layer (near
+the end of the Dockerfile) is rebuilt and `@latest` re-resolved, while all
+earlier layers (texlive, R, …) come from cache — a fast build, no commit
+needed. Set the input to false for a pure cached re-run (e.g. after a flaky
+build).
 
 ### Building locally 
 
@@ -108,8 +117,9 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `starship`,
 > `glow`, and Claude Code — all pull `@latest` / `releases/latest`, so their
 > versions float with each (no-cache) rebuild. Of these, only Claude Code has a
-> cache-bust knob (`CLAUDE_CACHE_BUST`); the rest re-resolve whenever their
-> layer is rebuilt. The weekly no-cache cron therefore also moves these tools.
+> cache-bust knob (`CLAUDE_CACHE_BUST`, wired to the manual-dispatch
+> `refresh_claude` input — see *Triggers* above); the rest re-resolve whenever
+> their layer is rebuilt. The weekly no-cache cron therefore also moves these tools.
 
 ## R packages — repository policy and date pin
 
