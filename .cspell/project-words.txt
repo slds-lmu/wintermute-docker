@@ -9,6 +9,7 @@ batcat
 Bernd's
 bischl
 btop
+cand
 Chamalis
 ciphertext
 Crashpad
@@ -50,6 +51,7 @@ nullglob
 passwordless
 pinentry
 pkgs
+plugdir
 polkit
 postinst
 powerlevel
