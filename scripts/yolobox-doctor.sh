@@ -17,6 +17,40 @@
 #         host bridge resolved — the symlinks, the plugin compat link, the real
 #         claude entry point, and the core tool stack.
 #
+# Checks performed (this is the integration-test surface)
+#   HOST mode:
+#     - yolobox binary present on PATH (+ version)
+#     - a container runtime reachable (docker/podman/apple 'container'; daemon up;
+#       off Linux, a reminder it must run Linux containers / WSL2 backend)
+#     - config.toml present; key settings echoed (claude_config, image, harness)
+#     - every mount SOURCE in config.toml exists on the host (missing source =
+#       silent dead bridge — the #1 failure we keep hitting)
+#     - host ~/.claude bridge state present (projects / history.jsonl / creds)
+#     - shell scripts are LF, not CRLF (the Windows 'bad interpreter' trap)
+#   IN-BOX mode:
+#     - running as the unprivileged 'yolo' user
+#     - claude launch chain resolves on PATH; /usr/local/bin/claude IS the shim;
+#       the real Claude Code entry point exists (mirrors the shim's own probe)
+#     - LIVE host bridge: projects / history.jsonl / .credentials.json are
+#       symlinks to their /host-claude-* mounts (else writes are lost on teardown)
+#     - session resume readiness: transcripts are reachable through the bridge,
+#       the current project has resumable *.jsonl, and the newest one is valid
+#       JSONL (preconditions for `claude --resume`; we don't invoke it)
+#     - --write-probe (opt-in): a sentinel written in-box actually appears on the
+#       host through the sessions bridge
+#     - plugin path fixup: the host-prefix compat symlink resolves; sudo available
+#     - core tool stack on PATH (R, node, git, rg, jq, …), ~/.local/bin first,
+#       LC_NUMERIC=C
+#   BOTH modes (inventory, never affects exit code):
+#     - print the global yolobox config.toml verbatim
+#     - list installed Claude Code plugins (+ scope) and their marketplaces
+#     - list skills available to Claude Code (standalone + currently-installed
+#       plugin versions)
+#
+# NOT covered here (would need a real container runtime / a harness):
+#   actually launching a box, building the image, or exercising Claude end-to-end.
+#   This script tests the SETUP/CONTRACT around the box, not a running agent.
+#
 # Portability
 #   POSIX sh only (runs under dash on WSL2-Ubuntu, bash 3.2 on macOS, busybox
 #   ash, …). No bashisms, no `local`, no `echo -e`, no `readlink -f` (macOS
@@ -306,6 +340,60 @@ inbox_checks() {
   check_bridge "$HOME/.claude/projects"         /host-claude-sessions        "sessions+memory"
   check_bridge "$HOME/.claude/history.jsonl"    /host-claude-history.jsonl   "prompt history"
   check_bridge "$HOME/.claude/.credentials.json" /host-claude-credentials.json "credentials"
+
+  # ── Session resume readiness ──────────────────────────────────────────────
+  # `claude --resume` lists prior sessions from ~/.claude/projects/<mangled-cwd>/
+  # *.jsonl. (This is exactly why the bridge lives in the shim, not a SessionStart
+  # hook: --resume reads these files before any hook fires.) We can't safely run
+  # --resume here — it needs credentials, makes an API call, and appends to a
+  # transcript — so we verify its PRECONDITIONS read-only: the sessions store is
+  # reachable, holds transcripts, and the current project has resumable ones.
+  # Claude derives the project dir by replacing every non-alphanumeric character
+  # of the absolute cwd with '-' (verified: '/home/bischl/cos/.x' -> '...cos--x').
+  section "Session resume readiness"
+  proj="$HOME/.claude/projects"
+  if [ ! -e "$proj" ]; then
+    fail "no $proj — 'claude --resume' has nothing to read"
+  else
+    # Total transcripts reachable through the store (follow the bridge symlink).
+    total=$(find -L "$proj" -name '*.jsonl' 2>/dev/null | grep -c .)
+    if [ "$total" -gt 0 ]; then
+      pass "$total session transcript(s) reachable via $proj (resume can list sessions)"
+    else
+      warn "no *.jsonl transcripts under $proj — nothing to resume yet (expected on a fresh setup)"
+    fi
+
+    # Current-project resumability: does a dir match this cwd, with transcripts?
+    mangled=$(printf '%s' "$PWD" | sed 's#[^A-Za-z0-9]#-#g')
+    pdir="$proj/$mangled"
+    if [ -d "$pdir" ]; then
+      pc=$(find -L "$pdir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | grep -c .)
+      if [ "$pc" -gt 0 ]; then
+        pass "current project ($PWD): $pc resumable session(s)"
+        # Sanity-check the newest transcript: non-empty and valid JSONL (first
+        # line parses as JSON), so a truncated/corrupt file is caught, not just
+        # counted. Pick newest by mtime portably via ls -t.
+        # ls -t is the portable "newest by mtime" (BSD find has no -printf);
+        # transcript names are UUIDs, so no whitespace-globbing risk here.
+        # shellcheck disable=SC2012
+        newest=$(ls -t "$pdir"/*.jsonl 2>/dev/null | head -1)
+        if [ -n "$newest" ] && [ -s "$newest" ]; then
+          if head -1 "$newest" 2>/dev/null | { have jq && jq -e . >/dev/null 2>&1 \
+               || grep -q '^[[:space:]]*{'; }; then
+            pass "newest transcript parses as JSONL ($(basename "$newest"))"
+          else
+            fail "newest transcript is not valid JSONL ($(basename "$newest")) — resume may fail to load it"
+          fi
+        else
+          warn "newest transcript for this project is empty"
+        fi
+      else
+        warn "project dir exists but has no transcripts: $pdir"
+      fi
+    else
+      info "no sessions recorded for this project ($PWD) yet — resume would show nothing here"
+    fi
+  fi
 
   # Optional: prove writes actually reach the host (opt-in; writes a sentinel).
   if [ "$WRITE_PROBE" -eq 1 ]; then

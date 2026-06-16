@@ -96,7 +96,12 @@ hand on each machine. It auto-detects its context:
   live bridge resolved — the three bridge symlinks (`projects`, `history.jsonl`,
   `.credentials.json`) point at their `/host-claude-*` mounts, the plugin compat
   link resolves, the real `claude` entry point is found, and the core tool stack
-  is present. A FAIL here means writes won't survive teardown.
+  is present. A FAIL here means writes won't survive teardown. It also checks
+  **session-resume readiness**: that prior transcripts are reachable through the
+  bridge, the current project has resumable `*.jsonl` sessions (keyed by Claude's
+  cwd→dir mangling), and the newest one is valid JSONL — the preconditions for
+  `claude --resume`, checked read-only (the script never invokes resume, which
+  would need credentials and an API call).
 
 In **both** contexts it then prints an inventory (informational, never affects the
 exit code): the **global yolobox `config.toml`** (verbatim — host-side, so in-box
