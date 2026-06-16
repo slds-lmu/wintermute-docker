@@ -11,6 +11,8 @@ image — **yolobox** — a data-science / dev sandbox layered on top of the ups
 ├── CLAUDE.md              # rules
 ├── README.md              # this file
 ├── .github/workflows/     # CI: docker-yolobox.yml (multi-arch build + push)
+├── scripts/
+│   └── yolobox-doctor.sh  # OS-independent read-only diagnostic (host & in-box)
 └── yolobox/
     ├── Dockerfile         # the image definition
     ├── install_packages.R # R package set + PPM date pin (run from the Dockerfile)
@@ -77,6 +79,45 @@ Useful build args:
 
 - `CLAUDE_CACHE_BUST` — bump (or pass `$(date +%s)`) to force re-pulling
   `@latest` Claude Code instead of reusing the cached layer.
+
+## Diagnostics (`scripts/yolobox-doctor.sh`)
+
+A single **OS-independent, read-only** diagnostic anyone can run to produce a
+categorized `PASS`/`WARN`/`FAIL` report — instead of live-debugging the setup by
+hand on each machine. It auto-detects its context:
+
+- **On the host** (no `$YOLOBOX`): checks launch prerequisites — the `yolobox`
+  binary, a reachable container runtime (and, off Linux, a reminder it must be in
+  Linux-container/WSL2 mode), `config.toml`, that each **mount source exists on
+  the host** (a missing one is the #1 silent cause of a dead bridge), the host
+  `~/.claude` state, and **CRLF line endings** in the shell scripts (the classic
+  Windows breakage — a `\r` in the shim's shebang yields `bad interpreter`).
+- **Inside a box** (`$YOLOBOX` set): verifies the launch shim actually ran and the
+  live bridge resolved — the three bridge symlinks (`projects`, `history.jsonl`,
+  `.credentials.json`) point at their `/host-claude-*` mounts, the plugin compat
+  link resolves, the real `claude` entry point is found, and the core tool stack
+  is present. A FAIL here means writes won't survive teardown.
+
+In **both** contexts it then prints an inventory (informational, never affects the
+exit code): the **global yolobox `config.toml`** (verbatim — host-side, so in-box
+it usually reports it isn't mounted and points you at the host), the **Claude Code
+plugins** installed (name@marketplace + scope) and their marketplaces, and the
+**skills** available to Claude Code — standalone (`~/.claude/skills`) plus those
+bundled in the *currently-installed* plugin versions. The plugin-skill scan reads
+only the installed `installPath`s from the registry, **not** a blanket
+`plugins/cache` scan (which also holds every stale cached version), and names each
+skill by its `SKILL.md` frontmatter `name:`.
+
+```sh
+sh scripts/yolobox-doctor.sh               # auto-detects host vs in-box
+sh scripts/yolobox-doctor.sh --write-probe # in-box: also test host write-through
+```
+
+It is POSIX `sh` (runs under dash on WSL2-Ubuntu, bash on macOS, …), never
+mutates state (except the opt-in `--write-probe`, which writes and removes a
+sentinel), and exits non-zero if any check fails — so it doubles as a CI smoke
+test. Run it from the repo root so the host-side line-ending check can find the
+scripts.
 
 ## What's installed
 
