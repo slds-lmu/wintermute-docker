@@ -73,9 +73,41 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Read a symlink's immediate target portably (macOS readlink has no -f).
 linktarget() { readlink "$1" 2>/dev/null; }
 
+# Friendly one-line OS identification, portable across the targets we support.
+# `uname -s` gives the kernel family; we refine it per family into a name a human
+# recognizes (distro + version on Linux, product version on macOS, WSL/Windows).
+detect_os() {
+  k=$(uname -s 2>/dev/null || echo unknown)
+  case "$k" in
+    Linux)
+      if [ -r /etc/os-release ]; then
+        # PRETTY_NAME, e.g. "Ubuntu 24.04.1 LTS"; strip the surrounding quotes.
+        # shellcheck disable=SC1091  # runtime file, not present at lint time
+        pretty=$(. /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-Linux}")
+      else
+        pretty="Linux"
+      fi
+      printf 'Linux (%s)' "$pretty"
+      ;;
+    Darwin)
+      if have sw_vers; then
+        printf 'macOS %s (build %s)' \
+          "$(sw_vers -productVersion 2>/dev/null)" "$(sw_vers -buildVersion 2>/dev/null)"
+      else
+        printf 'macOS (Darwin %s)' "$(uname -r 2>/dev/null)"
+      fi
+      ;;
+    CYGWIN*|MINGW*|MSYS*)
+      printf 'Windows (%s — POSIX emulation layer)' "$k" ;;
+    *)
+      printf '%s' "$k" ;;
+  esac
+}
+
 # ── Environment facts (always) ────────────────────────────────────────────────
 section "Environment"
 OS=$(uname -s 2>/dev/null || echo unknown)
+info "OS: $(detect_os)"
 info "uname: $(uname -a 2>/dev/null || echo unknown)"
 info "shell: ${SHELL:-?}   (running under: $0)"
 info "user:  $(id -un 2>/dev/null || echo ?)   home: ${HOME:-?}"
