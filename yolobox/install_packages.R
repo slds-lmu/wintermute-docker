@@ -45,7 +45,7 @@ install.packages(
 # getOption("repos"), so this single PPM entry is the only repo it resolves against.
 options(
     repos = c(
-        PPM = "https://packagemanager.posit.co/cran/__linux__/noble/2026-06-07"
+        PPM = "https://packagemanager.posit.co/cran/__linux__/noble/2026-06-14"
     )
 )
 pkgs <- c(
