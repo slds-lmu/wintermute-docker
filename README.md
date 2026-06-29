@@ -218,7 +218,7 @@ both arch legs, so every per-arch image carries identical provenance.
 
 ## R packages — repository policy and date pin
 
-We ship a dedicated small satck or R packages, 
+We ship a dedicated small stack of R packages,
 installed by **`install_packages.R`** using `pak` and PPM,
 using pre-compiled noble binaries from a **date-pinned snapshot**. 
 The pinned date is the  `noble/<DATE>` line in `install_packages.R`.
@@ -229,6 +229,32 @@ The daily cron bumps this pin automatically: it rewrites the `noble/<DATE>`
 line in `install_packages.R` to T-7 days, rebuilds no-cache, and commits the
 change back to `main` (see the workflow section above). To bump out of cycle,
 edit that line yourself and rebuild.
+
+### Per-project R packages
+
+The baked package set above is a *shared* system library for ad-hoc use. A project
+that needs its **own** extra R packages bakes them into a **derived image** via a
+`.yolobox.Dockerfile` fragment — the R analogue of the `uv pip install` fragment
+under *Per-project customization*. yolobox builds and caches the derived image on
+top of this base, so the packages are preinstalled at container start.
+
+Install with `pak` (already on the image) and pin `repos` to a **date-stamped PPM
+snapshot**, exactly as the image's own `install_packages.R` does — that gives
+reproducible, pre-compiled noble binaries instead of source compiles:
+
+```dockerfile
+# .yolobox.Dockerfile
+RUN Rscript -e 'options(repos = c(PPM = "https://packagemanager.posit.co/cran/__linux__/noble/<DATE>")); pak::pak(c("pkgA", "pkgB"))'
+```
+
+Notes:
+
+- **Pin the date** (`noble/<DATE>`, e.g. `noble/2026-06-21`) for reproducibility;
+  using `noble/latest` would let versions float with every rebuild. See *R packages
+  — repository policy and date pin* above for the rationale.
+- **Native builds already work** if a package has no PPM binary: the image ships the
+  `-dev` headers (see *What's installed*), so a source compile succeeds — staying on
+  PPM binaries just avoids it.
 
 ## Python and Python packages
 
