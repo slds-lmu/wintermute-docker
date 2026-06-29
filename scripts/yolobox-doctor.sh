@@ -265,9 +265,10 @@ yolobox_config_section() {
     # Verify each mount's HOST source exists. A missing source is the #1 silent
     # cause of "the bridge does nothing": docker creates the missing source as an
     # empty dir, so it mounts empty in-box and the shim silently no-ops.
-    info "Mount sources: each 'mounts' entry is host_path:container_path[:opt] — we"
-    info "check the HOST side (left of ':') exists, since a missing source mounts as"
-    info "empty in-box and silently kills the bridge it feeds."
+    info "Each 'mounts' entry is host_path:container_path[:opt]. We check that the host"
+    info "side (left of the ':') exists. If it doesn't, Docker silently creates it as an"
+    info "empty directory and mounts that — so the box sees nothing and the bridge it"
+    info "feeds does nothing."
     mounts=$(awk '
       /mounts[[:space:]]*=/        { inm=1 }
       inm && /"[^"]+"/ {
@@ -281,7 +282,7 @@ yolobox_config_section() {
       inm && /\]/                  { inm=0 }
     ' "$CFG" 2>/dev/null)
     if [ -z "$mounts" ]; then
-      warn "no mounts parsed from config — bridge mounts may be absent (shim becomes a no-op in-box)"
+      warn "no mounts parsed from config — the bridge mounts may be missing, leaving the launch shim with nothing to bridge inside the box"
     else
       # Iterate via here-doc (not a pipe) so pass/warn counters survive, and so
       # we can accumulate BRIDGE_PAIRS in this shell.
@@ -293,7 +294,7 @@ yolobox_config_section() {
         if [ -e "$src" ]; then
           pass "host source exists: $src  → in-box: $tgt"
         else
-          warn "host source MISSING: $src  → in-box: $tgt  (mounts as empty in-box → bridge no-op)"
+          warn "host source MISSING: $src  → in-box: $tgt  (Docker mounts an empty dir here, so the bridge carries nothing)"
         fi
         # Collect the live-bridge mounts (only those whose source exists, so we
         # never attach — and thus never auto-create — a missing host path).
@@ -321,9 +322,9 @@ EOF
 # state it feeds.
 host_claude_state() {
   section "Host Claude state (bridge sources)"
-  info "The host-side ~/.claude paths the live bridge maps into the box."
-  info "If a path is absent here, its bridge has nothing to surface in-box (and"
-  info "nothing to persist back) until Claude first creates it on the host."
+  info "These are the host ~/.claude paths the live bridge maps into the box."
+  info "If one is missing here, the box has nothing to show for it — and nothing to"
+  info "save back to the host — until Claude creates it on the host for the first time."
   _hcs() {  # path, role, what's lost if missing
     if [ -e "$1" ]; then pass "$2 present: $1"
     else warn "$2 ABSENT: $1  ($3 until it exists on the host)"; fi
@@ -441,12 +442,17 @@ run_probe() {
 $BRIDGE_PAIRS
 EOF
   if [ -n "$BRIDGE_TGTS" ]; then
-    info "bridge mounts attached to probe:$BRIDGE_TGTS"
-    info "note: the probe reproduces the shim's symlink swap faithfully; permission/"
-    info "write-through results are best-effort (a plain 'docker run' doesn't replicate"
-    info "yolobox's uid mapping), so those degrade to WARN, never FAIL."
+    info "host bridge mounts attached to the probe:$BRIDGE_TGTS"
+    info "The probe now repeats what the launch shim does at boot: for each mount it"
+    info "deletes the snapshot copy and puts a symlink in its place (~/.claude/<x> ->"
+    info "the mount), then checks that the symlink resolves and the mount is usable."
+    info "One caveat: this is a plain 'docker run', not a real yolobox launch, so it"
+    info "does NOT set up yolobox's user-ID mapping. Because of that, a mount can look"
+    info "read-only, or a write can fail to reach the host, purely because the user IDs"
+    info "don't match — not because the bridge is broken. So those two checks only ever"
+    info "WARN, never FAIL. (A real box has the mapping; trust write-through only there.)"
   else
-    warn "no bridge mounts to attach (none configured, or sources missing) — bridge test limited to image-intrinsic checks"
+    warn "no bridge mounts to attach (none configured, or their host sources are missing) — the bridge can't be tested, so only the image's own contents are checked below"
   fi
 
   # The in-container probe. Intentionally single-quoted so $VARS expand inside the
@@ -493,7 +499,7 @@ for dst in ${BRIDGE:-}; do
     *)                             name=$(basename "$dst") ;;
   esac
   if [ ! -e "$dst" ]; then e WARN "bridge mount not attached: $dst"; continue; fi
-  if [ -w "$dst" ]; then e PASS "bridge mount writable: $dst"; else e WARN "bridge mount not writable by the probe: $dst (could be a ro mount, or just the probe not replicating yolobox uid mapping)"; fi
+  if [ -w "$dst" ]; then e PASS "bridge mount writable: $dst"; else e WARN "bridge mount not writable by the probe: $dst (either a read-only mount, or — more likely — this probe lacks the yolobox user-ID mapping, so a usable mount can still look read-only here)"; fi
   mkdir -p "$H/.claude" 2>/dev/null
   rm -rf "$H/.claude/$name" 2>/dev/null
   if ln -s "$dst" "$H/.claude/$name" 2>/dev/null && [ "$(readlink "$H/.claude/$name" 2>/dev/null)" = "$dst" ]; then
@@ -548,7 +554,7 @@ EOF
         pass "write reached the host: $sent — bridge is genuinely two-way"
         rm -f "$sent" 2>/dev/null
       else
-        warn "probe write into $tgt did not appear at host source $src — likely the probe not replicating yolobox's uid mapping (write-through is authoritative only inside a real box)"
+        warn "probe write into $tgt did not reach the host at $src — most likely because this probe lacks yolobox's user-ID mapping. Only a real yolobox box has that mapping, so this write-through test is conclusive only when run from inside one."
       fi
     done <<EOF
 $BRIDGE_PAIRS
