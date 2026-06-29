@@ -92,6 +92,16 @@ hand on each machine. It auto-detects its context:
   the host** (a missing one is the #1 silent cause of a dead bridge), the host
   `~/.claude` state, and **CRLF line endings** in the shell scripts (the classic
   Windows breakage — a `\r` in the shim's shebang yields `bad interpreter`).
+
+A **Versions** section reports the three numbers worth comparing when something
+misbehaves: the **yolobox** binary, **Claude Code on the host**, and **Claude Code
+in the image**. No single context sees all three (the host doesn't ship the
+image's binary; the box ships neither yolobox nor the host's binary), so each side
+prints what it can and points at the other. Note that `yolobox --version` (with
+dashes) forwards to the default harness and prints e.g. `2.1.170 (Claude Code)` —
+that's Claude Code, not yolobox; the doctor instead calls the `yolobox version`
+**subcommand** (no dashes), which prints yolobox's own version (e.g. `yolobox
+0.18.4 (linux/amd64)`).
 - **Inside a box** (`$YOLOBOX` set): verifies the launch shim actually ran and the
   live bridge resolved — the three bridge symlinks (`projects`, `history.jsonl`,
   `.credentials.json`) point at their `/host-claude-*` mounts, the plugin compat

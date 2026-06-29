@@ -107,6 +107,25 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # Read a symlink's immediate target portably (macOS readlink has no -f).
 linktarget() { readlink "$1" 2>/dev/null; }
 
+# Strip ANSI colour escape sequences from stdin. Some tools (e.g. yolobox)
+# emit colour codes unconditionally — even when their output is piped, not a
+# TTY — which would otherwise litter a captured/pasted report.
+strip_ansi() {
+  _esc=$(printf '\033')
+  sed "s/${_esc}\[[0-9;]*m//g"
+}
+
+# Claude Code version baked into THIS environment, read from the installed npm
+# package's package.json (the reliable source — `claude --version` would need to
+# launch the wrapped binary). Prints the bare version or nothing.
+cc_pkg_version() {
+  pj=/usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json
+  [ -f "$pj" ] || return 0
+  if have jq; then jq -r '.version // empty' "$pj" 2>/dev/null
+  else grep -m1 '"version"' "$pj" 2>/dev/null | sed -E 's/.*"version"[^"]*"([^"]+)".*/\1/'
+  fi
+}
+
 # Friendly one-line OS identification, portable across the targets we support.
 # `uname -s` gives the kernel family; we refine it per family into a name a human
 # recognizes (distro + version on Linux, product version on macOS, WSL/Windows).
@@ -163,23 +182,69 @@ else
   MODE=host;  info "context: HOST (no \$YOLOBOX) — checking launch prerequisites"
 fi
 
+# ── Versions ──────────────────────────────────────────────────────────────────
+# Three numbers worth comparing when something misbehaves: the yolobox binary,
+# the Claude Code on the host, and the Claude Code baked into the image. No single
+# context can see all three (the host doesn't ship the image's binary; the box
+# doesn't ship yolobox or the host's binary), so each side reports what it can and
+# points at the other for the rest. The image's CC version floats with each
+# (no-cache) rebuild, so a host/box mismatch is normal — only a surprise.
+#
+# HOST: the version numbers belong with "is the launch toolchain here at all?",
+# so they're folded into the merged "yolobox & container runtime" section in
+# host_checks() below (binary presence + version + Claude versions + runtime in
+# one block). Here we only print the IN-BOX version view.
+if [ "$MODE" = inbox ]; then
+  section "Versions"
+  # In-box: the image's Claude Code is the one we can read reliably.
+  v=$(cc_pkg_version)
+  if [ -n "$v" ]; then info "Claude Code (in box): $v"
+  else warn "Claude Code (in box): could not read package.json version"; fi
+  info "Claude Code (host): run this doctor on the HOST to read it (claude --version)"
+  info "yolobox: binary not present in-box — run this doctor on the HOST for its version"
+fi
+
 # =============================================================================
 # HOST MODE — will a box launch and bridge at all?
 # =============================================================================
 host_checks() {
-  # ── yolobox binary ──────────────────────────────────────────────────────
-  section "yolobox CLI"
+  # ── yolobox & container runtime (the host launch toolchain, with versions) ──
+  # One section answering "can this host launch a box, and with what versions?":
+  #   (a) the yolobox binary — present on PATH + its own version,
+  #   (b) the Claude Code versions worth comparing (host + image pointer),
+  #   (c) a working container runtime (present + daemon reachable).
+  section "yolobox & container runtime"
+
+  # (a) yolobox binary: presence AND version together.
+  # IMPORTANT: `yolobox --version` (with dashes) FORWARDS to the default harness
+  # and prints e.g. "2.1.170 (Claude Code)" — that's Claude Code, not yolobox.
+  # yolobox's *own* version comes from the `version` SUBCOMMAND (no dashes):
+  # `yolobox version` -> "yolobox 0.18.4 (linux/amd64)". We strip its ANSI colour
+  # codes (yolobox emits them even when piped) for a clean report.
   if have yolobox; then
     pass "yolobox on PATH: $(command -v yolobox)"
-    ver=$(yolobox --version 2>/dev/null | head -1)
-    if [ -n "$ver" ]; then info "version: $ver"
-    else warn "could not read 'yolobox --version' (old build?)"; fi
+    yb_ver=$(yolobox version 2>/dev/null | head -1 | strip_ansi)
+    case "$yb_ver" in
+      "") warn "  'yolobox version' printed nothing — a build too old for the 'version' subcommand? check your installer (e.g. 'brew list --versions yolobox')" ;;
+      *"Claude Code"*|*"claude"*)
+        # A yolobox old enough to lack the 'version' subcommand can forward this too.
+        info "  version: $yb_ver"
+        warn "  that looks like the forwarded harness version, not yolobox's own — your yolobox likely predates the 'version' subcommand; check your installer (e.g. 'brew list --versions yolobox')" ;;
+      *)  info "  version: $yb_ver" ;;
+    esac
   else
     fail "yolobox not on PATH — install it, or you're on a machine that only runs the host side via WSL/SSH"
   fi
 
-  # ── Container runtime ───────────────────────────────────────────────────
-  section "Container runtime"
+  # (b) Claude Code versions — host binary (read directly) + image pointer.
+  if have claude; then
+    info "Claude Code (host): $(claude --version 2>/dev/null | head -1)"
+  else
+    info "Claude Code (host): 'claude' not on PATH"
+  fi
+  info "Claude Code (in image): run this doctor IN-BOX to read the shipped version"
+
+  # (c) Container runtime: yolobox needs one to start a box.
   RT=""
   for c in docker podman container; do
     have "$c" && { RT="$c"; break; }
@@ -203,55 +268,11 @@ host_checks() {
     esac
   fi
 
-  # ── config.toml ─────────────────────────────────────────────────────────
-  section "yolobox config"
-  CFG="${XDG_CONFIG_HOME:-$HOME/.config}/yolobox/config.toml"
-  if [ -f "$CFG" ]; then
-    pass "config found: $CFG"
-    for key in claude_config image default_harness; do
-      line=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$CFG" 2>/dev/null | head -1)
-      [ -n "$line" ] && info "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
-    done
-
-    # Verify the HOST sources of each mount exist. A missing source is the #1
-    # silent cause of "the bridge does nothing" — the shim then no-ops.
-    section "Mount sources (host side)"
-    # Extract the source (text before the first ':') from each quoted mount entry.
-    srcs=$(awk '
-      /mounts[[:space:]]*=/        { inm=1 }
-      inm && /"[^"]+"/ {
-        s=$0
-        while (match(s, /"[^"]+"/)) {
-          q=substr(s, RSTART+1, RLENGTH-2)
-          if (q ~ /:/) { sub(/:.*/, "", q); print q }
-          s=substr(s, RSTART+RLENGTH)
-        }
-      }
-      inm && /\]/                  { inm=0 }
-    ' "$CFG" 2>/dev/null)
-    if [ -z "$srcs" ]; then
-      warn "no mounts parsed from config — bridge mounts may be absent (shim becomes a no-op in-box)"
-    else
-      echo "$srcs" | while IFS= read -r s; do
-        [ -z "$s" ] && continue
-        if [ -e "$s" ]; then
-          pass "mount source exists: $s"
-        else
-          warn "mount source MISSING on host: $s  (that mount will be empty/absent in-box)"
-        fi
-      done
-    fi
-  else
-    warn "no config at $CFG — yolobox runs with upstream defaults (no SLDS bridge mounts)"
-  fi
-
-  # ── Host Claude state the bridge depends on ───────────────────────────────
-  section "Host Claude state"
-  for p in "$HOME/.claude/projects" "$HOME/.claude/history.jsonl" "$HOME/.claude/.credentials.json"; do
-    if [ -e "$p" ]; then pass "present: $p"
-    else warn "absent: $p  (its bridge will no-op until it exists)"
-    fi
-  done
+  # NOTE: the yolobox config.toml + its bridge mount-source checks, and the
+  # "Host Claude state" of those bridge sources, are handled by the unified
+  # yolobox_config_section() / host_claude_state() in the COMMON INVENTORY block
+  # below — printed right after the config so the mounts and their sources sit
+  # together — so they aren't duplicated here.
 
   # ── Shell-script line endings (CRLF = the Windows killer) ──────────────────
   # If the shim or shell config got CRLF endings (e.g. edited/checked out on
@@ -454,29 +475,96 @@ inbox_checks() {
 # COMMON INVENTORY — runs in BOTH modes
 #   These describe the Claude Code config the box runs with: the global yolobox
 #   config.toml, plus the skills and plugins available to Claude Code in the box.
-#   Pure inventory (INFO/PASS), no FAILs — so it never affects the exit code.
+#   INFO/PASS/WARN only, no FAILs — so this block never affects the exit code.
 # =============================================================================
 
-# ── Print the global yolobox config.toml ──────────────────────────────────────
-# The global config is a HOST-side file (~/.config/yolobox/config.toml). It is
-# normally NOT mounted into the box, so in-box this section usually reports it
-# absent and points you at the host — that's expected, not a failure.
-dump_global_config() {
-  section "Global yolobox config (config.toml)"
+# ── yolobox config.toml — locate, validate mounts (host), dump verbatim ───────
+# ONE section for everything about the global yolobox config (we used to split
+# "yolobox config" + "Mount sources" + a separate verbatim "Global config" dump).
+# The config is a HOST-side file (~/.config/yolobox/config.toml), normally NOT
+# mounted into the box — so in-box this usually reports it absent and points you
+# at the host; that's expected, not a failure. On the HOST it additionally
+# validates the bridge mount sources before printing the file as reference.
+yolobox_config_section() {
+  section "yolobox config (config.toml)"
   cfg=""
   for c in "${XDG_CONFIG_HOME:-$HOME/.config}/yolobox/config.toml" \
            "$HOME/.config/yolobox/config.toml"; do
     [ -f "$c" ] && { cfg=$c; break; }
   done
-  if [ -n "$cfg" ]; then
-    info "source: $cfg"
-    # Print the file verbatim, indented so it's visually distinct in a report.
-    sed 's/^/    | /' "$cfg"
-  elif [ "$MODE" = inbox ]; then
-    info "not mounted in-box — it's a host-side file; run this on the host to print it"
-  else
-    warn "no config.toml at the standard path — yolobox is using upstream defaults"
+
+  if [ -z "$cfg" ]; then
+    if [ "$MODE" = inbox ]; then
+      info "not mounted in-box — it's a host-side file; run this on the host to print it"
+    else
+      warn "no config.toml at the standard path — yolobox is using upstream defaults (no SLDS bridge mounts)"
+    fi
+    return 0
   fi
+  pass "config found: $cfg"
+
+  # HOST only: verify each mount's HOST source exists. A missing source is the #1
+  # silent cause of "the bridge does nothing" — docker creates the missing source
+  # as an empty dir, so it mounts empty in-box and the shim silently no-ops.
+  if [ "$MODE" = host ]; then
+    info "Mount sources: each 'mounts' entry is host_path:container_path — we check the"
+    info "HOST side (left of ':') exists, since a missing source mounts as empty in-box"
+    info "and silently kills the bridge it feeds."
+    # Keep the whole "host:container" mapping so we can show source AND target.
+    mounts=$(awk '
+      /mounts[[:space:]]*=/        { inm=1 }
+      inm && /"[^"]+"/ {
+        s=$0
+        while (match(s, /"[^"]+"/)) {
+          q=substr(s, RSTART+1, RLENGTH-2)
+          if (q ~ /:/) { print q }
+          s=substr(s, RSTART+RLENGTH)
+        }
+      }
+      inm && /\]/                  { inm=0 }
+    ' "$cfg" 2>/dev/null)
+    if [ -z "$mounts" ]; then
+      warn "no mounts parsed from config — bridge mounts may be absent (shim becomes a no-op in-box)"
+    else
+      echo "$mounts" | while IFS= read -r entry; do
+        [ -z "$entry" ] && continue
+        src=${entry%%:*}        # host path (what we test)
+        tgt=${entry#*:}         # container path it's mounted at
+        if [ -e "$src" ]; then
+          pass "host source exists: $src  → in-box: $tgt"
+        else
+          warn "host source MISSING: $src  → in-box: $tgt  (mounts as empty in-box → bridge no-op)"
+        fi
+      done
+    fi
+  fi
+
+  # Both modes: print the file verbatim as reference, indented so it stands out.
+  info "full contents:"
+  sed 's/^/    | /' "$cfg"
+}
+
+# ── Host Claude state the bridge SOURCES from (host only) ──────────────────────
+# The bridge mounts above bind three HOST paths under ~/.claude into the box; the
+# launch shim then symlinks the box's ~/.claude entries onto those mounts. This
+# checks the HOST end of that chain: do those three source paths actually exist
+# as real Claude state on this machine? (Distinct from the mount-source check
+# above, which reads them out of config.toml — here we name each by its ROLE and
+# say what breaks in-box if it's missing.) An absent source isn't a hard error —
+# Claude creates it on first use — but until it exists its bridge carries nothing.
+# Printed right after the config so each mount sits next to the state it feeds.
+host_claude_state() {
+  section "Host Claude state (bridge sources)"
+  info "The three host-side ~/.claude paths the live bridge maps into the box."
+  info "If a path is absent here, its bridge has nothing to surface in-box (and"
+  info "nothing to persist back) until Claude first creates it on the host."
+  _hcs() {  # path, role, what's lost if missing
+    if [ -e "$1" ]; then pass "$2 present: $1"
+    else warn "$2 ABSENT: $1  ($3 until it exists on the host)"; fi
+  }
+  _hcs "$HOME/.claude/projects"          "sessions+memory" "no past sessions or per-project memory in-box"
+  _hcs "$HOME/.claude/history.jsonl"     "prompt history"  "no prompt history in-box"
+  _hcs "$HOME/.claude/.credentials.json" "credentials"     "box starts logged out → /login"
 }
 
 # Emit the installPath of every CURRENTLY-installed plugin, normalized to this
@@ -583,7 +671,8 @@ list_skills() {
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 if [ "$MODE" = "host" ]; then host_checks; else inbox_checks; fi
-dump_global_config
+yolobox_config_section
+[ "$MODE" = "host" ] && host_claude_state   # host-only; right after the config it sources from
 list_plugins
 list_skills
 

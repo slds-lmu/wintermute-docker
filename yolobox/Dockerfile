@@ -207,9 +207,7 @@ RUN rm -f /usr/local/bin/claude \
     && mv /usr/local/bin/claude.shim /usr/local/bin/claude \
     && chmod 0755 /usr/local/bin/claude
 
-# Disable Claude Code's native self-updater. This is load-bearing for the shim,
-# not a mere preference — without it the shim silently stops running.
-#
+# Disable Claude Code's native self-updater. 
 # Why: the launch chain relies on `~/.local/bin/claude` resolving to the shim
 # (the wrapper does `which claude`, and ~/.local/bin is first on PATH). On a
 # fresh home volume that symlink is seeded from the image as
@@ -220,14 +218,6 @@ RUN rm -f /usr/local/bin/claude \
 # that native binary and the shim at /usr/local/bin/claude is NEVER reached — so
 # plugin path-fixup AND the live session/memory/credential bridge both silently
 # stop happening, and the breakage persists across relaunches via the volume.
-#
-# DISABLE_AUTOUPDATER=1 keeps the seeded `-> shim` symlink intact forever. It's an
-# ENV (image metadata), so it applies to the entrypoint and every claude process
-# and is NOT shadowed by the home volume. (DISABLE_UPDATES is the newer sibling
-# var; DISABLE_AUTOUPDATER is the long-standing one the binary still honors.)
-# Claude Code itself is upgraded at image-build time (the npm install above),
-# pinned to the published image — not by in-box self-update. The zsh config
-# additionally self-heals volumes already clobbered by a pre-fix self-update.
 ENV DISABLE_AUTOUPDATER=1
 
 # Interactive shell setup: zsh + plugins + starship prompt.
