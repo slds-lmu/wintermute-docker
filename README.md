@@ -371,3 +371,86 @@ RUN uv pip install --system --exclude-newer <DATE> <project-packages>
 
 See the upstream docs at <https://yolobox.dev/customizing> for the full
 customization, rebuild, and upgrade behavior.
+
+## Running multiple boxes at once (concurrency)
+
+Nothing stops you from opening **several Claude-launched boxes at the same time**
+— different terminals, different projects, or even two boxes pointed at the *same*
+directory. Whether that is safe depends entirely on **what state they share**, and
+the live host bridge (see *Claude Code integration* above) is what makes them share
+it. Each box is its own container with its own ephemeral filesystem, but the shim
+symlinks the same **host** paths into *every* box, so those paths are one shared
+surface across all boxes **and** the host.
+
+**Shared live across all boxes + the host** (via the bridge — two-way, no locking):
+
+- `~/.claude/projects` → host `~/.claude/projects` — **sessions *and* per-project
+  memory** (Claude stores memory under `projects/<encoded-cwd>/memory/`).
+- `~/.claude/history.jsonl` → host — the single append-only **prompt history** file.
+
+**Not shared — per-box snapshot or ephemeral, so these never collide:**
+
+- **Credentials** (not bridged — each box logs in on its own; see above).
+- **Config** (`~/.claude.json`, settings): a dead snapshot per box. Edits made in
+  one box neither reach the others nor survive teardown.
+- **Plugins**: a per-box snapshot copy (path-fixed, compat-symlinked in the
+  container's ephemeral fs).
+- The **version-check sentinel** (`/tmp`) and the **plugin-registry rewrite**
+  (`$HOME/.claude/plugins`, not bridged) are container-local — each box does them
+  independently, so concurrent boxes don't interfere here.
+
+### Different directories — the common case, and it's fine
+
+Two boxes on **different** projects land in different `projects/<encoded-cwd>/`
+subtrees, so their sessions and memory are namespaced apart and never touch. The
+only thing they still share is the single `history.jsonl`: prompt history from all
+boxes (and the host) interleaves into one file. That is already true host-side and
+is essentially cosmetic — history lines are independent appends — so running many
+boxes across different projects is the intended, safe mode.
+
+### Same directory, two *fresh* sessions — the common case, and it's basically safe
+
+The everyday case is two boxes in the same project, each started with a plain
+`claude` (no `--continue`, no `--resume`) — e.g. one for a feature and one for a
+quick fix. **At the session/transcript level this is safe.** Every fresh launch
+mints a **new session UUID**, so the two boxes write to *distinct*
+`projects/<encoded-cwd>/<uuid>.jsonl` files and never append to the same transcript.
+Each box still *sees* the other's session in the `--resume` picker (they share the
+`projects` subtree), but nothing forces them onto the same file, so transcripts
+cannot interleave or corrupt. Go ahead and do this.
+
+Two caveats survive even in this fresh-session case, because they don't depend on
+the session file:
+
+- **Per-project memory is still shared, unlocked.** Both boxes read/write the same
+  `projects/<proj>/memory/` tree. Distinct memory *files* are fine, but if both
+  boxes happen to update the shared **`MEMORY.md` index** at the same moment it's
+  last-writer-wins and one entry is silently lost. The window is small (memory
+  writes are brief and occasional), so in practice this rarely bites — but it is the
+  one real data-loss risk of the common case.
+- **The working tree is shared.** If yolobox mounts the same host project directory
+  into both boxes (the default, non-fork mount), two autonomous agents edit the same
+  files concurrently — the ordinary lost-update / half-written-file / git-index race,
+  amplified by both sides acting on their own. This is not Claude-specific (two
+  humans hacking the same checkout hit it too), but two agents make it more likely.
+
+`history.jsonl` also interleaves, but that is cosmetic (independent line appends),
+exactly as in the different-dir case.
+
+### Same directory — the sharp edge to actually avoid
+
+The one thing that *does* corrupt state is **resuming the *same* session from two
+boxes**: `claude --continue` reattaches to the most-recent session in the cwd, so
+two boxes both running `--continue` (or `--resume <same-uuid>`) latch onto the
+*same* `<uuid>.jsonl` and append concurrently — interleaved, corrupted transcript.
+Don't resume one session in two boxes at once. (Different `--resume` *targets* are
+fine — that's just two fresh-style sessions on distinct files.)
+
+**Rule of thumb:** concurrent boxes on *different* projects — go ahead. Two *fresh*
+sessions on the *same* project — also fine; just be aware memory/`MEMORY.md` writes
+and the working tree are shared (isolate the tree with fork mode or a git worktree
+if both agents will edit heavily). The only hard "don't" is resuming the *same*
+session from two boxes. Note also that `/home/yolo` is a persistent volume (next
+section); if yolobox attaches it to more than one running container at once,
+container-local state there (zsh history, the zoxide db) is shared live too.
+
