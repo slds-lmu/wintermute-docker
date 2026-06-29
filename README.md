@@ -214,7 +214,7 @@ the box would vanish on teardown (and re-snapshot fresh next launch — they are
 **not** preserved by the home volume).
 
 **`claude-launch-shim.sh`** is installed at `/usr/local/bin/claude` and runs
-before the real binary on every `claude` invocation. It does two jobs:
+before the real binary on every `claude` invocation. It does three jobs:
 
 1. **Plugin path fixup (two layers).** The snapshot copies plugin *content* in,
    but the registry locates each plugin by an absolute *host* path that doesn't
@@ -241,6 +241,19 @@ before the real binary on every `claude` invocation. It does two jobs:
    Claude refreshes and may rotate its OAuth token mid-session, and a read-only
    snapshot would lose that write on teardown — so the next boot would re-snapshot
    an aging host token and drop you to `/login`.
+
+3. **Host/image version check.** Because the box shares live state with the host
+   (the bridge above plus the snapshotted `~/.claude` config), a host and image
+   running **different** Claude Code versions can skew that shared state (session
+   schema, config migrations, credential layout). Once per boot the shim compares
+   the **image** version (`package.json` of the installed npm package —
+   authoritative) against the **host** version (`~/.claude/.last-update-result.json`
+   `version_to` on a successful update; this file is host-only because the in-box
+   updater is disabled, and it is re-snapshotted every boot). On a mismatch it
+   prints a warning and, on an **interactive** launch, waits for you to press
+   **Enter** before continuing — headless `claude -p` runs print the warning but
+   never block. The check is robust by omission: if either version can't be
+   determined it stays silent rather than raise a false alarm.
 
 **Required host config.** The rw staging mounts come from the yolobox
 `config.toml` `mounts` list (managed in the sysadmin repo):

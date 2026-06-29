@@ -162,4 +162,62 @@ if [ -e /host-claude-credentials.json ] && [ ! -L "$HOME/.claude/.credentials.js
   ln -s /host-claude-credentials.json "$HOME/.claude/.credentials.json"
 fi
 
+# ── Host vs image Claude Code version check ──────────────────────────────────
+# The box shares LIVE state with the host — sessions, history, credentials (the
+# bridges above) plus the snapshotted ~/.claude config. When the host and the
+# image run different Claude Code versions, that shared state can drift in format
+# (session schema, config migrations, credential layout), so we surface a
+# mismatch once per boot and — on an interactive launch — make the user
+# acknowledge it with Enter before continuing.
+#
+# Version sources, chosen for robustness (we must NEVER block or break a launch
+# on missing/ambiguous data — a false alarm is worse than no alarm):
+#   image : the npm package's package.json "version" — authoritative and instant
+#           (no need to spawn the ~245 MB binary just to read --version).
+#   host  : ~/.claude/.last-update-result.json "version_to", and only when the
+#           recorded update "status"/"outcome" is success. The in-box updater is
+#           disabled (DISABLE_AUTOUPDATER=1 in the Dockerfile), so this file is
+#           NEVER written inside the box — it reflects the HOST's native Claude
+#           exclusively, and the entrypoint re-snapshots it from the host on
+#           every boot. If the file is absent or the last update failed, the host
+#           version is unknown and we stay silent rather than guess.
+#
+# Gated to run at most once per boot via an ephemeral /tmp sentinel (the
+# container fs resets each launch; /home is the persistent volume and must NOT
+# hold this, or the check would fire only once ever). The blocking read fires
+# only on a real TTY, so headless `claude -p` invocations print the warning (if
+# any) but never hang waiting for input.
+version_sentinel="${TMPDIR:-/tmp}/.claude-version-checked"
+if [ ! -e "$version_sentinel" ]; then
+  : > "$version_sentinel" 2>/dev/null || true
+
+  img_ver=$(grep -m1 '"version"' "$PKG/package.json" 2>/dev/null \
+            | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+
+  host_ver=
+  upd="$HOME/.claude/.last-update-result.json"
+  if [ -f "$upd" ] && grep -qE '"(status|outcome)":"success"' "$upd" 2>/dev/null; then
+    host_ver=$(grep -oE '"version_to":"[^"]+"' "$upd" 2>/dev/null \
+               | sed -E 's/.*"([^"]+)"$/\1/')
+  fi
+
+  # Only warn when BOTH versions are known and they actually differ.
+  if [ -n "$img_ver" ] && [ -n "$host_ver" ] && [ "$img_ver" != "$host_ver" ]; then
+    # Colorize only on a TTY so headless logs stay free of escape codes.
+    if [ -t 2 ]; then y=$'\033[33m'; b=$'\033[1m'; n=$'\033[0m'; else y=''; b=''; n=''; fi
+    printf '\n%s%s⚠  Claude Code version mismatch%s\n' "$b" "$y" "$n" >&2
+    printf '   host : %s\n' "$host_ver" >&2
+    printf '   image: %s\n' "$img_ver" >&2
+    printf '   The box shares sessions, history, credentials and config with the\n' >&2
+    printf '   host; differing versions can skew that shared state. Rebuild the\n' >&2
+    printf '   image (or align the host) if you hit trouble.\n' >&2
+    # Interactive launch only: require an explicit Enter to proceed.
+    if [ -t 0 ] && [ -t 2 ]; then
+      printf '\n   Press Enter to continue (Ctrl-C to abort)... ' >&2
+      read -r _ || true
+      printf '\n' >&2
+    fi
+  fi
+fi
+
 exec "$REAL" "$@"
