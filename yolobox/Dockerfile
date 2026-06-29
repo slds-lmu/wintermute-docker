@@ -185,10 +185,10 @@ RUN rm -f /usr/local/bin/claude \
 #   2. Bridges the dirs we want LIVE by symlinking them to rw host mounts staged
 #      at /host-claude-* (outside ~/.claude, so the entrypoint's `rm -rf` can't
 #      clobber the host data): ~/.claude/projects (sessions + per-project
-#      memory), ~/.claude/history.jsonl (prompt history), and
-#      ~/.claude/.credentials.json (so a token refreshed/rotated in-box writes
-#      back to the host instead of being lost — otherwise you get re-prompted
-#      to /login each boot).
+#      memory) and ~/.claude/history.jsonl (prompt history). Credentials are
+#      deliberately NOT bridged — a single-file bind mount pins the inode, but
+#      Claude rotates its token via atomic rename, which swaps the inode and
+#      breaks the mount; the box just logs in per session (see the shim header).
 # The shim execs the real binary by absolute path (resolved from the npm package
 # dir — see the shim's candidate probe), so the upstream /opt/yolobox/bin/claude
 # wrapper still resolves `which claude` here without recursion. The rw mounts themselves come from the sysadmin config.toml

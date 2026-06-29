@@ -44,14 +44,12 @@
 #   Without those mounts this shim is a transparent no-op and the dead snapshot
 #   copies are used as-is.
 #
-# Bridged too: credentials
-#   Claude refreshes (and may rotate) its OAuth token mid-session; a read-only
-#   snapshot would lose that write on teardown, so the next boot re-snapshots an
-#   aging host token and drops you to /login. So .credentials.json is bridged rw
-#   like the dirs above — see the credentials block below.
-#
 # Not bridged
 #   Plugins are not live: the snapshot copy is used as-is, only path-fixed.
+#   Credentials are NOT bridged: a single-file bind mount pins the inode at
+#   container start, but Claude refreshes its OAuth token via atomic rename
+#   (write tmp + rename), which swaps the inode and silently breaks the mount —
+#   so the box just logs in per session (or use CLAUDE_CODE_OAUTH_TOKEN).
 #
 # Launch chain
 #   `claude` -> /opt/yolobox/bin/claude (upstream wrapper, adds
@@ -150,23 +148,11 @@ if [ -e /host-claude-history.jsonl ] && [ ! -L "$HOME/.claude/history.jsonl" ]; 
   ln -s /host-claude-history.jsonl "$HOME/.claude/history.jsonl"
 fi
 
-# ── Live credentials bridge ─────────────────────────────────────────────────
-# Same swap, but the point is write-back: Claude refreshes its OAuth access
-# token (and may rotate the refresh token) and writes the new value to
-# ~/.claude/.credentials.json. Pointing that at the rw host mount makes the
-# write land on the host, so the next boot starts from a current token instead
-# of the aging snapshot — without this you get dropped to /login. Same `! -L`
-# idempotency, and the `rm` only removes the container-local snapshot copy.
-if [ -e /host-claude-credentials.json ] && [ ! -L "$HOME/.claude/.credentials.json" ]; then
-  rm -f "$HOME/.claude/.credentials.json"
-  ln -s /host-claude-credentials.json "$HOME/.claude/.credentials.json"
-fi
-
 # ── Host vs image Claude Code version check ──────────────────────────────────
-# The box shares LIVE state with the host — sessions, history, credentials (the
-# bridges above) plus the snapshotted ~/.claude config. When the host and the
+# The box shares LIVE state with the host — sessions and history (the bridges
+# above) plus the snapshotted ~/.claude config. When the host and the
 # image run different Claude Code versions, that shared state can drift in format
-# (session schema, config migrations, credential layout), so we surface a
+# (session schema, config migrations), so we surface a
 # mismatch once per boot and — on an interactive launch — make the user
 # acknowledge it with Enter before continuing.
 #
@@ -208,7 +194,7 @@ if [ ! -e "$version_sentinel" ]; then
     printf '\n%s%s⚠  Claude Code version mismatch%s\n' "$b" "$y" "$n" >&2
     printf '   host : %s\n' "$host_ver" >&2
     printf '   image: %s\n' "$img_ver" >&2
-    printf '   The box shares sessions, history, credentials and config with the\n' >&2
+    printf '   The box shares sessions, history and config with the\n' >&2
     printf '   host; differing versions can skew that shared state. Rebuild the\n' >&2
     printf '   image (or align the host) if you hit trouble.\n' >&2
     # Interactive launch only: require an explicit Enter to proceed.

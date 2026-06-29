@@ -321,7 +321,7 @@ EOF
 # state it feeds.
 host_claude_state() {
   section "Host Claude state (bridge sources)"
-  info "The three host-side ~/.claude paths the live bridge maps into the box."
+  info "The host-side ~/.claude paths the live bridge maps into the box."
   info "If a path is absent here, its bridge has nothing to surface in-box (and"
   info "nothing to persist back) until Claude first creates it on the host."
   _hcs() {  # path, role, what's lost if missing
@@ -330,7 +330,6 @@ host_claude_state() {
   }
   _hcs "$HOME/.claude/projects"          "sessions+memory" "no past sessions or per-project memory in-box"
   _hcs "$HOME/.claude/history.jsonl"     "prompt history"  "no prompt history in-box"
-  _hcs "$HOME/.claude/.credentials.json" "credentials"     "box starts logged out → /login"
 }
 
 # ── Shell-script line endings (CRLF = the Windows killer) ─────────────────────
@@ -491,7 +490,6 @@ for dst in ${BRIDGE:-}; do
   case "$dst" in
     /host-claude-sessions)         name=projects ;;
     /host-claude-history.jsonl)    name=history.jsonl ;;
-    /host-claude-credentials.json) name=.credentials.json ;;
     *)                             name=$(basename "$dst") ;;
   esac
   if [ ! -e "$dst" ]; then e WARN "bridge mount not attached: $dst"; continue; fi
@@ -561,7 +559,7 @@ EOF
 # ── Claude Code version: host vs image ────────────────────────────────────────
 # The doctor is the one place that sees BOTH numbers (host via `claude --version`,
 # image via the probe), so it's where the comparison belongs. The box shares live
-# state with the host — sessions, history, credentials, snapshotted config — so a
+# state with the host — sessions, history, snapshotted config — so a
 # version skew can muddle that shared state. Non-fatal (WARN, never FAIL): a
 # mismatch is expected right after the host updates but before the image is
 # rebuilt/pulled. Skipped silently unless BOTH versions are known.
@@ -574,7 +572,7 @@ cc_version_check() {
   if [ "$CC_HOST" = "$CC_IMAGE" ]; then
     pass "host and image run the same Claude Code ($CC_HOST)"
   else
-    warn "Claude Code differs — host $CC_HOST vs image $CC_IMAGE; the box shares sessions/history/credentials/config with the host, so a skew can muddle that shared state (pull/rebuild the image, or align the host)"
+    warn "Claude Code differs — host $CC_HOST vs image $CC_IMAGE; the box shares sessions/history/config with the host, so a skew can muddle that shared state (pull/rebuild the image, or align the host)"
   fi
 }
 

@@ -127,7 +127,7 @@ What it checks:
 - **Claude Code version: host vs image** — the doctor is the one place that sees
   *both* numbers (host via `claude --version`, image via the probe), so it compares
   them: **PASS** if equal, **WARN** if they differ (the box shares live
-  sessions/history/credentials/config with the host, so a skew can muddle that
+  sessions/history/config with the host, so a skew can muddle that
   shared state). Non-fatal, and skipped unless both versions are known.
 
 It then prints an inventory (informational, never affects the exit code) read from
@@ -170,7 +170,7 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    (see *Python packages* below).
 6. **Tooling binaries** — `air` (R formatter), `starship` prompt, `yq`, `glow`.
 7. **Claude Code** — reinstalled `@latest` via npm, plus the launch shim
-   (`claude-launch-shim.sh`) that live-bridges sessions/memory/history/credentials
+   (`claude-launch-shim.sh`) that live-bridges sessions/memory/history
    from the host under `claude_config=true`; see *Claude Code integration* below.
 8. **Shell environment** — zsh + autosuggestions + syntax-highlighting, fzf
    shell-integration, git wiring in `/etc/gitconfig`.
@@ -271,20 +271,25 @@ before the real binary on every `claude` invocation. It does three jobs:
    mount:
    - `~/.claude/projects` → `/host-claude-sessions` (sessions **and** per-project memory)
    - `~/.claude/history.jsonl` → `/host-claude-history.jsonl` (prompt history)
-   - `~/.claude/.credentials.json` → `/host-claude-credentials.json` (OAuth token)
 
    Reads and writes then hit the host both ways — your real history/memory show
    up in the box and survive teardown. (This lives in the shim, not a Claude
    `SessionStart` hook, because `claude --resume` lists sessions *before* any
-   hook fires.) Credentials are bridged **read-write** for a specific reason:
-   Claude refreshes and may rotate its OAuth token mid-session, and a read-only
-   snapshot would lose that write on teardown — so the next boot would re-snapshot
-   an aging host token and drop you to `/login`.
+   hook fires.)
+
+   **Credentials are deliberately *not* bridged.** A single-file bind mount pins
+   the inode that existed at container start, but Claude refreshes its OAuth token
+   via an atomic rename (write tmp + `rename` over `.credentials.json`), which
+   swaps the inode and silently breaks the mount — stale token in-box, lost write
+   on the host. So the box simply logs in once per session. For unattended/`-p`
+   use, forward a long-lived `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`)
+   instead — note it satisfies headless runs but interactive launches may still
+   show the login picker until onboarding is completed once.
 
 3. **Host/image version check.** Because the box shares live state with the host
    (the bridge above plus the snapshotted `~/.claude` config), a host and image
    running **different** Claude Code versions can skew that shared state (session
-   schema, config migrations, credential layout). Once per boot the shim compares
+   schema, config migrations). Once per boot the shim compares
    the **image** version (`package.json` of the installed npm package —
    authoritative) against the **host** version (`~/.claude/.last-update-result.json`
    `version_to` on a successful update; this file is host-only because the in-box
@@ -300,7 +305,6 @@ before the real binary on every `claude` invocation. It does three jobs:
 ```
 "/home/<user>/.claude/projects:/host-claude-sessions"
 "/home/<user>/.claude/history.jsonl:/host-claude-history.jsonl"
-"/home/<user>/.claude/.credentials.json:/host-claude-credentials.json"
 ```
 
 Without those mounts the shim is a transparent no-op and the dead snapshot copies
