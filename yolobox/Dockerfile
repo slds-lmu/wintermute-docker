@@ -93,7 +93,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libproj-dev \
     libprotobuf-dev \
     libgdal-dev \
+    # libmagick++-dev: ImageMagick C++ headers + runtime libs for the R `magick`
+    # package, a hard dependency of `vistool` (installed from GitHub in
+    # install_packages.R). magick dynamically links libMagick++ at namespace-load
+    # time, so without this `library(vistool)` fails with a shared-object error.
+    libmagick++-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Headless Chromium for the R webshot2/chromote stack, which `vistool` uses to
+# rasterize htmlwidgets/plotly to static images. This is a runtime-only dep: vistool
+# loads without it, but the screenshot feature launches a browser on demand.
+#
+# Why this PPA and not apt/Chrome: Ubuntu noble ships no usable chromium .deb
+# (`chromium`/`chromium-browser` are snap stubs that don't run in a container), and
+# Google Chrome has no arm64 Linux build — either would break our multi-arch build.
+# The xtradeb PPA publishes a real chromium .deb for BOTH amd64 and arm64 on noble,
+# so it is the one apt-native multi-arch option. As a third-party source it floats
+# outside the PPM date pin (same caveat as vistool itself). We do NOT install
+# chromium-driver: chromote drives the browser over the DevTools protocol, not via
+# chromedriver. CHROMOTE_CHROME pins the binary so chromote skips auto-discovery.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends software-properties-common \
+    && add-apt-repository -y ppa:xtradeb/apps \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends chromium \
+    && rm -rf /var/lib/apt/lists/* \
+    && chromium --version
+ENV CHROMOTE_CHROME=/usr/bin/chromium
 
 # LaTeX / document toolchain. texlive-full pulls ~3000 .deb
 # files, so add apt retry/timeout config first to survive flaky mirrors.

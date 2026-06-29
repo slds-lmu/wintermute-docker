@@ -161,18 +161,21 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    gdb, valgrind, cppcheck, ccache).
 2. **Native dev libraries** — the `-dev` headers needed to compile R/Python
    packages with native code (libcurl, libxml2, fontconfig, freetype, GDAL, GLPK,
-   Eigen, …).
-3. **LaTeX / document toolchain** — pandoc, tidy, qpdf, poppler-utils, lmodern,
+   Eigen, …), plus `libmagick++-dev` for the R `magick` package (a `vistool` dep).
+3. **Headless Chromium** — `chromium` from the xtradeb PPA (multi-arch amd64+arm64),
+   for the R `webshot2`/`chromote` stack used by `vistool`; `CHROMOTE_CHROME` points
+   at it. See *R packages* for why this PPA (and not apt/Google Chrome).
+4. **LaTeX / document toolchain** — pandoc, tidy, qpdf, poppler-utils, lmodern,
    `texlive-full`.
-4. **R** — current R from the CRAN apt repo, then packages via `install_packages.R`
+5. **R** — current R from the CRAN apt repo, then packages via `install_packages.R`
    (see *R packages* below).
-5. **Python** — no global library stack; only `copier` as an isolated `uv` tool
+6. **Python** — no global library stack; only `copier` as an isolated `uv` tool
    (see *Python packages* below).
-6. **Tooling binaries** — `air` (R formatter), `starship` prompt, `yq`, `glow`.
-7. **Claude Code** — reinstalled `@latest` via npm, plus the launch shim
+7. **Tooling binaries** — `air` (R formatter), `starship` prompt, `yq`, `glow`.
+8. **Claude Code** — reinstalled `@latest` via npm, plus the launch shim
    (`claude-launch-shim.sh`) that live-bridges sessions/memory/history
    from the host under `claude_config=true`; see *Claude Code integration* below.
-8. **Shell environment** — zsh + autosuggestions + syntax-highlighting, fzf
+9. **Shell environment** — zsh + autosuggestions + syntax-highlighting, fzf
    shell-integration, git wiring in `/etc/gitconfig`.
    
    Also wired up in the interactive shell:
@@ -218,10 +221,31 @@ both arch legs, so every per-arch image carries identical provenance.
 
 ## R packages — repository policy and date pin
 
-We ship a dedicated small stack of R packages,
-installed by **`install_packages.R`** using `pak` and PPM,
-using pre-compiled noble binaries from a **date-pinned snapshot**. 
-The pinned date is the  `noble/<DATE>` line in `install_packages.R`.
+We ship a curated stack of R packages (the mlr3 ecosystem, the tidyverse, and the
+plotting / EDA / learner / dataset packages the SLDS lectures use), installed by
+**`install_packages.R`** using `pak` and PPM, as pre-compiled noble binaries from a
+**date-pinned snapshot**. The pinned date is the `noble/<DATE>` line in
+`install_packages.R`.
+
+**One documented exception to PPM-only.** Two packages the lectures use are not on
+CRAN/PPM, so they can't come from the date-pinned snapshot. They install in a
+**separate, clearly-marked step at the end of `install_packages.R`**, from different
+non-PPM sources:
+
+- **`mlr3extralearners`** — from the **mlr-org r-universe** (precompiled binary).
+- **`vistool`** — **not on any r-universe**; only the GitHub repo exists, so it is
+  built from **GitHub source** (`slds-lmu/vistool`). Its two system deps are both
+  installed in the Dockerfile: **`libmagick++-dev`** (for `magick`, linked at load
+  time) and **`chromium`** from the **xtradeb PPA** (for `webshot2`/`chromote`, which
+  rasterize htmlwidgets/plotly via a headless browser), with `CHROMOTE_CHROME`
+  pointing at `/usr/bin/chromium`. xtradeb is used because it's the only real
+  chromium `.deb` that is multi-arch (amd64 + arm64) on noble — Ubuntu's apt
+  chromium is a snap stub and Google Chrome has no arm64 build. Like vistool, this
+  PPA floats outside the PPM date pin.
+
+Trade-off: these sources have no date pin, so unlike everything else these two
+**float** with each rebuild. Everything in the main `pkgs` list stays strictly
+PPM-only and date-pinned.
 
 ### Bumping the R snapshot date
 
