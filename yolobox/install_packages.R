@@ -33,6 +33,14 @@
 # still trips this layer.
 
 Sys.setenv(NOT_CRAN = "true")
+# Point pak's internal libcurl at the SYSTEM CA bundle. pak normally uses its own
+# bundled curl-ca-bundle.crt, but that file can be absent in this image (it is not
+# present under /usr/local/lib/R/site-library/pak/), which makes pak's NON-PPM HTTPS
+# queries fail with "error setting certificate verify locations" — breaking the
+# GitHub (vistool) and r-universe (mlr3extralearners) resolution in the extra step
+# below. The ca-certificates system bundle is always present, so use it. Set here in
+# the parent process so pak's background subprocess inherits it.
+Sys.setenv(CURL_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt")
 install.packages(
     "pak",
     repos = sprintf(
