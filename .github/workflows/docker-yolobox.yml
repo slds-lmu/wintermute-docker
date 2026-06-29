@@ -103,6 +103,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       ppm_date: ${{ steps.compute.outputs.ppm_date }}
+      build_date: ${{ steps.meta.outputs.build_date }}
+      base_digest: ${{ steps.meta.outputs.base_digest }}
     steps:
       - name: Compute PPM date pin (T-7 days, schedule only)
         id: compute
@@ -111,6 +113,26 @@ jobs:
           date=$(date -u -d '7 days ago' +%Y-%m-%d)
           echo "ppm_date=$date" >> "$GITHUB_OUTPUT"
           echo "Will pin PPM to noble/$date"
+
+      # Build provenance shared by BOTH matrix legs, so every per-arch image is
+      # stamped identically (see the Dockerfile's "Image build metadata" block).
+      #   build_date  — one RFC3339 timestamp for the whole run (computing it per
+      #                 leg would let amd64/arm64 differ by a second).
+      #   base_digest — the upstream finbarr/yolobox base's immutable digest,
+      #                 resolved ONCE straight from the registry (imagetools
+      #                 inspect does not pull) so both legs agree on the value
+      #                 BuildKit will use for `FROM …:latest`. Falls back to
+      #                 "unknown" if the lookup fails, so the build never blocks
+      #                 on it. The base is public, so no login is needed.
+      - name: Resolve build metadata
+        id: meta
+        run: |
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          digest=$(docker buildx imagetools inspect ghcr.io/finbarr/yolobox:latest \
+                     --format '{{.Manifest.Digest}}' 2>/dev/null) || digest=""
+          [ -n "$digest" ] || digest=unknown
+          echo "base_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Base digest: $digest"
 
   # -----------------------------------------------------------------------
   # Job 1: Build per-arch on the matching native runner. Each matrix leg
@@ -222,8 +244,16 @@ jobs:
           # @latest` layer is re-run (see the Dockerfile's Claude Code block).
           # All other events pass '1' — the Dockerfile's ARG default — so the
           # cache key is unchanged and layer reuse is unaffected.
+          # Build-time provenance stamped into the image (Dockerfile "Image
+          # build metadata" block): the SLDS commit + timestamp, and the exact
+          # upstream base ref/digest this build layered on. base_digest comes
+          # from the `prepare` job so both arches agree.
           build-args: |
             CLAUDE_CACHE_BUST=${{ (github.event_name == 'workflow_dispatch' && inputs.refresh_claude) && github.run_id || '1' }}
+            SLDS_IMAGE_REVISION=${{ github.sha }}
+            SLDS_IMAGE_CREATED=${{ needs.prepare.outputs.build_date }}
+            SLDS_BASE_IMAGE=ghcr.io/finbarr/yolobox:latest
+            SLDS_BASE_DIGEST=${{ needs.prepare.outputs.base_digest }}
           # Per-platform cache scope so amd64 and arm64 don't overwrite each
           # other's cached layers.
           cache-from: type=gha,scope=${{ matrix.platform }}-yolobox

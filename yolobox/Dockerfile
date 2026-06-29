@@ -353,6 +353,45 @@ ENV SHELL=/bin/zsh \
     LC_NUMERIC=C \
     STARSHIP_CONFIG=/etc/starship.toml
 
+# ── Image build metadata ─────────────────────────────────────────────────────
+# Stamp build provenance into the image so the version numbers worth comparing
+# are actually recoverable later: WHICH commit this SLDS image was built from,
+# WHEN, and WHICH upstream finbarr/yolobox base it was layered on. Without this
+# the base digest is unknowable after the fact (the `FROM` tag floats and the
+# built image records nothing about what `:latest` resolved to). yolobox-doctor.sh
+# surfaces these (in-box from the ENV below, on the host via `docker image
+# inspect`). CI fills the args in (see .github/workflows/docker-yolobox.yml);
+# all default to "unknown" so a plain `docker build yolobox` — no buildx, no CI —
+# still succeeds.
+#   SLDS_IMAGE_REVISION — git commit this image was built from (the SLDS version)
+#   SLDS_IMAGE_CREATED  — RFC3339 build timestamp
+#   SLDS_BASE_IMAGE     — upstream base ref (must match the FROM line at top)
+#   SLDS_BASE_DIGEST    — that base's immutable digest, resolved at build time
+# Declared LAST on purpose: these args change on every build, so keeping them
+# below all the heavy RUN layers means a metadata-only change rebuilds just this
+# tiny ENV/LABEL layer instead of busting the whole cache.
+ARG SLDS_IMAGE_REVISION=unknown
+ARG SLDS_IMAGE_CREATED=unknown
+ARG SLDS_BASE_IMAGE=ghcr.io/finbarr/yolobox:latest
+ARG SLDS_BASE_DIGEST=unknown
+# ENV: the in-box read path. A running container cannot inspect its OWN image's
+# labels without the container runtime (which the box does not get), but ENV
+# baked here is always present in the container's environment, so the doctor can
+# read it directly inside the box.
+ENV SLDS_IMAGE_REVISION=${SLDS_IMAGE_REVISION} \
+    SLDS_IMAGE_CREATED=${SLDS_IMAGE_CREATED} \
+    SLDS_BASE_IMAGE=${SLDS_BASE_IMAGE} \
+    SLDS_BASE_DIGEST=${SLDS_BASE_DIGEST}
+# LABELs: the host read path — standard OCI keys surfaced by `docker image
+# inspect`. org.opencontainers.image.base.{name,digest} are the OCI-blessed way
+# to record the upstream base an image derives from.
+LABEL org.opencontainers.image.title="slds-yolobox" \
+      org.opencontainers.image.source="https://github.com/slds-lmu/wintermute-docker" \
+      org.opencontainers.image.revision="${SLDS_IMAGE_REVISION}" \
+      org.opencontainers.image.created="${SLDS_IMAGE_CREATED}" \
+      org.opencontainers.image.base.name="${SLDS_BASE_IMAGE}" \
+      org.opencontainers.image.base.digest="${SLDS_BASE_DIGEST}"
+
 # Restore the unprivileged default user from the upstream image so containers
 # launched from this image keep dropping privileges by default.
 USER yolo

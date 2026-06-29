@@ -114,9 +114,13 @@ that's Claude Code, not yolobox; the doctor instead calls the `yolobox version`
   would need credentials and an API call).
 
 In **both** contexts it then prints an inventory (informational, never affects the
-exit code): the **global yolobox `config.toml`** (verbatim — host-side, so in-box
-it usually reports it isn't mounted and points you at the host), the **Claude Code
-plugins** installed (name@marketplace + scope) and their marketplaces, and the
+exit code): the **Docker image identity** — the SLDS image's build revision and
+date, plus the upstream `finbarr/yolobox` base digest it was layered on (read
+in-box from the `SLDS_*` env baked into the image, and on the host via `docker
+image inspect`; see *Image provenance* below) — the **global yolobox `config.toml`**
+(verbatim — host-side, so in-box it usually reports it isn't mounted and points you
+at the host), the **Claude Code plugins** installed (name@marketplace + scope) and
+their marketplaces, and the
 **skills** available to Claude Code — standalone (`~/.claude/skills`) plus those
 bundled in the *currently-installed* plugin versions. The plugin-skill scan reads
 only the installed `installPath`s from the registry, **not** a blanket
@@ -176,6 +180,28 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 > cache-bust knob (`CLAUDE_CACHE_BUST`, wired to the manual-dispatch
 > `refresh_claude` input — see *Triggers* above); the rest re-resolve whenever
 > their layer is rebuilt. The weekly no-cache cron therefore also moves these tools.
+
+### Image provenance
+
+Because the image's tags float (`:latest`) and the `FROM` base is itself a moving
+`:latest`, the image would otherwise record nothing about *which* commit built it
+or *which* base it was layered on. The Dockerfile's final layer stamps that
+provenance in, supplied by CI as build-args (defaulting to `unknown` so a plain
+`docker build yolobox` still works):
+
+| field | meaning | exposed as |
+|-------|---------|------------|
+| `SLDS_IMAGE_REVISION` | git commit (`github.sha`) the image was built from | env + `org.opencontainers.image.revision` |
+| `SLDS_IMAGE_CREATED` | RFC3339 build timestamp | env + `org.opencontainers.image.created` |
+| `SLDS_BASE_IMAGE` | upstream base ref (`ghcr.io/finbarr/yolobox:latest`) | env + `org.opencontainers.image.base.name` |
+| `SLDS_BASE_DIGEST` | that base's **immutable digest**, resolved once at build time | env + `org.opencontainers.image.base.digest` |
+
+Each value is baked **both** as an `ENV` (so it's readable *inside* a running box,
+which has no runtime to inspect its own image) **and** as an OCI `LABEL` (so the
+host can read it with `docker image inspect`). `yolobox-doctor.sh` surfaces them in
+its *Docker image* section — in-box from the env, on the host by inspecting the
+configured image ref. The base digest is resolved once in CI's `prepare` job and
+shared by both arch legs, so every per-arch image carries identical provenance.
 
 ## R packages — repository policy and date pin
 

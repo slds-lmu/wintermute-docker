@@ -42,6 +42,9 @@
 #     - core tool stack on PATH (R, node, git, rg, jq, …), ~/.local/bin first,
 #       LC_NUMERIC=C
 #   BOTH modes (inventory, never affects exit code):
+#     - Docker image identity: the SLDS image's build revision/date and the
+#       upstream finbarr/yolobox base digest it was layered on (in-box from the
+#       baked SLDS_* env; on the host via `docker image inspect`)
 #     - print the global yolobox config.toml verbatim
 #     - list installed Claude Code plugins (+ scope) and their marketplaces
 #     - list skills available to Claude Code (standalone + currently-installed
@@ -478,6 +481,81 @@ inbox_checks() {
 #   INFO/PASS/WARN only, no FAILs — so this block never affects the exit code.
 # =============================================================================
 
+# ── Docker image identity (the SLDS image + the upstream base it builds on) ───
+# Reports the version numbers worth knowing for the image itself: which SLDS
+# commit it was built from, when, and which finbarr/yolobox base digest it was
+# layered on. These are baked by the Dockerfile's "Image build metadata" block.
+# Two read paths, because no single context can do both:
+#   IN-BOX: the SLDS_* values are baked as ENV, hence always in the container
+#           environment — read straight from there (the box has no runtime to
+#           inspect its own image's labels).
+#   HOST:   the box isn't running here, so inspect the configured image ref with
+#           docker/podman — the same values live as ENV + OCI labels — and also
+#           show the local image's own digest and creation time.
+# Informational only (never a FAIL). "unknown"/absent simply means the image
+# predates this metadata or was built locally without the build-args.
+docker_image_section() {
+  section "Docker image"
+
+  if [ "$MODE" = inbox ]; then
+    rev=${SLDS_IMAGE_REVISION:-}; created=${SLDS_IMAGE_CREATED:-}
+    base=${SLDS_BASE_IMAGE:-};    bdig=${SLDS_BASE_DIGEST:-}
+    if [ -n "$rev$created$base$bdig" ]; then
+      info "SLDS image revision: ${rev:-unknown}"
+      info "SLDS image built:    ${created:-unknown}"
+      info "built on base:       ${base:-unknown}${bdig:+ @ }${bdig}"
+    else
+      info "no build metadata baked (SLDS_* env unset) — image predates it or was built locally without build-args"
+    fi
+    return 0
+  fi
+
+  # HOST: resolve the configured image ref (from config.toml `image =`, else the
+  # published default) and inspect it locally.
+  img_ref=""
+  for c in "${XDG_CONFIG_HOME:-$HOME/.config}/yolobox/config.toml" \
+           "$HOME/.config/yolobox/config.toml"; do
+    [ -f "$c" ] || continue
+    img_ref=$(grep -E '^[[:space:]]*image[[:space:]]*=' "$c" 2>/dev/null | head -1 \
+              | sed -E 's/.*=[[:space:]]*"?([^"#]+)"?.*/\1/; s/[[:space:]]*$//')
+    break
+  done
+  [ -n "$img_ref" ] || img_ref="ghcr.io/slds-lmu/slds-yolobox:latest"
+  info "configured image: $img_ref"
+
+  rt=""
+  for c in docker podman; do have "$c" && { rt=$c; break; }; done
+  if [ -z "$rt" ]; then
+    info "no docker/podman on host — cannot inspect the image; run this doctor IN-BOX to read the baked SLDS_* metadata"
+    return 0
+  fi
+  if ! "$rt" image inspect "$img_ref" >/dev/null 2>&1; then
+    info "image not present locally ($img_ref) — pull it (or launch a box) first; nothing to inspect"
+    return 0
+  fi
+
+  # Local identity of the cached image (independent of our baked metadata).
+  ldig=$("$rt" image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$img_ref" 2>/dev/null)
+  lcreated=$("$rt" image inspect --format '{{.Created}}' "$img_ref" 2>/dev/null)
+  if [ -n "$ldig" ]; then info "local image digest:  $ldig"; else info "local image digest:  <none recorded>"; fi
+  [ -n "$lcreated" ] && info "local image created: $lcreated"
+
+  # Baked SLDS_* provenance — read from ENV so it works regardless of label
+  # support; one inspect, then pick the fields out.
+  envdump=$("$rt" image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$img_ref" 2>/dev/null)
+  rev=$(printf '%s\n' "$envdump" | sed -n 's/^SLDS_IMAGE_REVISION=//p' | head -1)
+  created=$(printf '%s\n' "$envdump" | sed -n 's/^SLDS_IMAGE_CREATED=//p' | head -1)
+  base=$(printf '%s\n' "$envdump" | sed -n 's/^SLDS_BASE_IMAGE=//p' | head -1)
+  bdig=$(printf '%s\n' "$envdump" | sed -n 's/^SLDS_BASE_DIGEST=//p' | head -1)
+  if [ -n "$rev$created$base$bdig" ]; then
+    info "SLDS image revision: ${rev:-unknown}"
+    info "SLDS image built:    ${created:-unknown}"
+    info "built on base:       ${base:-unknown}${bdig:+ @ }${bdig}"
+  else
+    info "no SLDS_* build metadata on this image — predates it or was built without the build-args"
+  fi
+}
+
 # ── yolobox config.toml — locate, validate mounts (host), dump verbatim ───────
 # ONE section for everything about the global yolobox config (we used to split
 # "yolobox config" + "Mount sources" + a separate verbatim "Global config" dump).
@@ -671,6 +749,7 @@ list_skills() {
 
 # ── Dispatch ──────────────────────────────────────────────────────────────────
 if [ "$MODE" = "host" ]; then host_checks; else inbox_checks; fi
+docker_image_section
 yolobox_config_section
 [ "$MODE" = "host" ] && host_claude_state   # host-only; right after the config it sources from
 list_plugins
