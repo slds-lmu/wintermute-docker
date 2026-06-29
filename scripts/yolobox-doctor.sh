@@ -46,6 +46,8 @@
 #       shim's symlink swap resolves (~/.claude/<x> -> /host-claude-*), and with
 #       --write-probe a sentinel written in the container actually appears back
 #       on the host (genuine two-way proof)
+#   Claude Code version: host (claude --version) vs image (probe) — WARN if they
+#     differ, since the box shares live state with the host (non-fatal)
 #   Inventory (informational, never affects exit code; read from host ~/.claude):
 #     - installed Claude Code plugins (+ scope) and their marketplaces
 #     - skills available to Claude Code (standalone + currently-installed plugins)
@@ -97,6 +99,8 @@ fi
 
 PASS_N=0; WARN_N=0; FAIL_N=0
 FIRST_FAIL=""   # captured to build the "most likely stuck here" hint
+CC_HOST=""      # bare semver of Claude Code on the host (captured below)
+CC_IMAGE=""     # bare semver of Claude Code in the image (captured from the probe)
 
 section() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 pass()    { PASS_N=$((PASS_N+1)); printf '  %s[PASS]%s %s\n' "$C_GREEN" "$C_OFF" "$1"; }
@@ -196,9 +200,13 @@ else
   fail "yolobox not on PATH — install it, or you're on a machine that only runs the host side via WSL/SSH"
 fi
 
-# Claude Code on the host (the binary the host itself runs).
+# Claude Code on the host (the binary the host itself runs). Capture the bare
+# semver too (the line reads e.g. "2.1.170 (Claude Code)") for the host-vs-image
+# comparison after the probe runs.
 if have claude; then
-  info "Claude Code (host): $(claude --version 2>/dev/null | head -1)"
+  cc_host_raw=$(claude --version 2>/dev/null | head -1)
+  info "Claude Code (host): ${cc_host_raw:-?}"
+  CC_HOST=$(printf '%s\n' "$cc_host_raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 else
   info "Claude Code (host): 'claude' not on PATH"
 fi
@@ -518,7 +526,14 @@ done
       @@PASS) pass "$msg" ;;
       @@WARN) warn "$msg" ;;
       @@FAIL) fail "$msg" ;;
-      @@INFO) info "$msg" ;;
+      @@INFO)
+        info "$msg"
+        # Capture the image's Claude Code version for the host-vs-image check.
+        case "$msg" in
+          "Claude Code (in image): "*)
+            CC_IMAGE=$(printf '%s\n' "$msg" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) ;;
+        esac
+        ;;
     esac
   done <<EOF
 $out
@@ -540,6 +555,26 @@ EOF
     done <<EOF
 $BRIDGE_PAIRS
 EOF
+  fi
+}
+
+# ── Claude Code version: host vs image ────────────────────────────────────────
+# The doctor is the one place that sees BOTH numbers (host via `claude --version`,
+# image via the probe), so it's where the comparison belongs. The box shares live
+# state with the host — sessions, history, credentials, snapshotted config — so a
+# version skew can muddle that shared state. Non-fatal (WARN, never FAIL): a
+# mismatch is expected right after the host updates but before the image is
+# rebuilt/pulled. Skipped silently unless BOTH versions are known.
+cc_version_check() {
+  section "Claude Code version (host vs image)"
+  if [ -z "$CC_HOST" ] || [ -z "$CC_IMAGE" ]; then
+    info "skipped — need both versions (host: ${CC_HOST:-?}, image: ${CC_IMAGE:-?}); the image one needs the probe to have run"
+    return 0
+  fi
+  if [ "$CC_HOST" = "$CC_IMAGE" ]; then
+    pass "host and image run the same Claude Code ($CC_HOST)"
+  else
+    warn "Claude Code differs — host $CC_HOST vs image $CC_IMAGE; the box shares sessions/history/credentials/config with the host, so a skew can muddle that shared state (pull/rebuild the image, or align the host)"
   fi
 }
 
@@ -641,6 +676,7 @@ host_claude_state          # the host state the bridge sources from
 line_endings_section       # CRLF trap
 docker_image_section       # image identity (sets IMAGE_PRESENT)
 run_probe                  # image contract + live-bridge integration test
+cc_version_check           # host vs image Claude Code (needs both versions known)
 list_plugins
 list_skills
 

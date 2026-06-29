@@ -49,16 +49,18 @@ digests into one multi-arch manifest under the human-readable tags.
 | push to `main` touching `yolobox/**` or the workflow | build **+ push** |
 | pull request to `main` (same path filter) | build **only** (no push — fail fast on either arch) |
 | manual `workflow_dispatch` | build **+ push**; `refresh_claude` input (default **true**) busts the Claude Code layer so `@latest` is re-pulled |
-| weekly cron (Sun 03:00 UTC) | bump R PPM date + **no-cache** rebuild + push + commit the bump |
+| daily cron (03:00 UTC) | bump R PPM date + **no-cache** rebuild + push + commit the bump |
 
 **Tags pushed** (default branch): `:latest` (moves every build), `:<git-sha>`
 (immutable per commit), `:YYYY-MM-DD` (dated snapshot).
 
-**Weekly refresh:** the cron bumps the R PPM date pin to T-7 days, rebuilds with
+**Daily refresh:** the cron bumps the R PPM date pin to T-7 days, rebuilds with
 `no-cache` (so apt / CRAN / PyPI / npm updates actually flow into `:latest`), and
 on success commits the date bump back to `main` with `[skip ci]`. See *Bumping the
 R snapshot date* below — the cron automates exactly that edit. No secrets are
-needed; the per-run `GITHUB_TOKEN` is sufficient for ghcr.io pushes.
+needed; the per-run `GITHUB_TOKEN` is sufficient for ghcr.io pushes. (T-7 is the
+PPM publication-lag safety margin, not the cadence — each daily run still advances
+the pin by a day; a full no-cache rebuild every day is CI-minute heavy by design.)
 
 **Updating Claude Code in the published image:** trigger a manual run —
 `gh workflow run docker-yolobox.yml` or the *Run workflow* button in the
@@ -122,6 +124,11 @@ What it checks:
   sentinel written *in the container* is confirmed back *on the host* (genuine
   two-way proof). This replaces the old "must already be inside a box" check — the
   bridge can now be integration-tested anytime, from the host.
+- **Claude Code version: host vs image** — the doctor is the one place that sees
+  *both* numbers (host via `claude --version`, image via the probe), so it compares
+  them: **PASS** if equal, **WARN** if they differ (the box shares live
+  sessions/history/credentials/config with the host, so a skew can muddle that
+  shared state). Non-fatal, and skipped unless both versions are known.
 
 It then prints an inventory (informational, never affects the exit code) read from
 the host `~/.claude`: the **Claude Code plugins** installed (name@marketplace +
@@ -185,7 +192,7 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 > versions float with each (no-cache) rebuild. Of these, only Claude Code has a
 > cache-bust knob (`CLAUDE_CACHE_BUST`, wired to the manual-dispatch
 > `refresh_claude` input — see *Triggers* above); the rest re-resolve whenever
-> their layer is rebuilt. The weekly no-cache cron therefore also moves these tools.
+> their layer is rebuilt. The daily no-cache cron therefore also moves these tools.
 
 ### Image provenance
 
@@ -218,7 +225,7 @@ The pinned date is the  `noble/<DATE>` line in `install_packages.R`.
 
 ### Bumping the R snapshot date
 
-The weekly cron bumps this pin automatically: it rewrites the `noble/<DATE>`
+The daily cron bumps this pin automatically: it rewrites the `noble/<DATE>`
 line in `install_packages.R` to T-7 days, rebuilds no-cache, and commits the
 change back to `main` (see the workflow section above). To bump out of cycle,
 edit that line yourself and rebuild.
