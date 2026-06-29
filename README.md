@@ -12,7 +12,7 @@ image — **yolobox** — a data-science / dev sandbox layered on top of the ups
 ├── README.md              # this file
 ├── .github/workflows/     # CI: docker-yolobox.yml (multi-arch build + push)
 ├── scripts/
-│   └── yolobox-doctor.sh  # OS-independent read-only diagnostic (host & in-box)
+│   └── yolobox-doctor.sh  # OS-independent read-only diagnostic (run on the host)
 └── yolobox/
     ├── Dockerfile         # the image definition
     ├── install_packages.R # R package set + PPM date pin (run from the Dockerfile)
@@ -84,59 +84,65 @@ Useful build args:
 
 A single **OS-independent, read-only** diagnostic anyone can run to produce a
 categorized `PASS`/`WARN`/`FAIL` report — instead of live-debugging the setup by
-hand on each machine. It auto-detects its context:
+hand on each machine.
 
-- **On the host** (no `$YOLOBOX`): checks launch prerequisites — the `yolobox`
-  binary, a reachable container runtime (and, off Linux, a reminder it must be in
-  Linux-container/WSL2 mode), `config.toml`, that each **mount source exists on
-  the host** (a missing one is the #1 silent cause of a dead bridge), the host
-  `~/.claude` state, and **CRLF line endings** in the shell scripts (the classic
-  Windows breakage — a `\r` in the shim's shebang yields `bad interpreter`).
+**Run it from the host.** There is one mode: the host. That's where the launch
+toolchain (`yolobox` binary, container runtime, `config.toml`) and the real
+`~/.claude` state live — and the host is the only place that can see *all* of it.
+To check the things that exist only *inside* the image/container, the doctor
+**reaches in itself** rather than asking you to run it in a box: `docker image
+inspect` for image identity, and a throwaway `docker run --rm` **probe container**
+for the in-image contract and the live-bridge integration test. (If it detects it
+was started inside a box it says so and continues best-effort, but the meaningful
+report is host-side.)
 
-A **Versions** section reports the three numbers worth comparing when something
-misbehaves: the **yolobox** binary, **Claude Code on the host**, and **Claude Code
-in the image**. No single context sees all three (the host doesn't ship the
-image's binary; the box ships neither yolobox nor the host's binary), so each side
-prints what it can and points at the other. Note that `yolobox --version` (with
-dashes) forwards to the default harness and prints e.g. `2.1.170 (Claude Code)` —
-that's Claude Code, not yolobox; the doctor instead calls the `yolobox version`
-**subcommand** (no dashes), which prints yolobox's own version (e.g. `yolobox
-0.18.4 (linux/amd64)`).
-- **Inside a box** (`$YOLOBOX` set): verifies the launch shim actually ran and the
-  live bridge resolved — the three bridge symlinks (`projects`, `history.jsonl`,
-  `.credentials.json`) point at their `/host-claude-*` mounts, the plugin compat
-  link resolves, the real `claude` entry point is found, and the core tool stack
-  is present. A FAIL here means writes won't survive teardown. It also checks
-  **session-resume readiness**: that prior transcripts are reachable through the
-  bridge, the current project has resumable `*.jsonl` sessions (keyed by Claude's
-  cwd→dir mangling), and the newest one is valid JSONL — the preconditions for
-  `claude --resume`, checked read-only (the script never invokes resume, which
-  would need credentials and an API call).
+What it checks:
 
-In **both** contexts it then prints an inventory (informational, never affects the
-exit code): the **Docker image identity** — the SLDS image's build revision and
-date, plus the upstream `finbarr/yolobox` base digest it was layered on (read
-in-box from the `SLDS_*` env baked into the image, and on the host via `docker
-image inspect`; see *Image provenance* below) — the **global yolobox `config.toml`**
-(verbatim — host-side, so in-box it usually reports it isn't mounted and points you
-at the host), the **Claude Code plugins** installed (name@marketplace + scope) and
-their marketplaces, and the
-**skills** available to Claude Code — standalone (`~/.claude/skills`) plus those
-bundled in the *currently-installed* plugin versions. The plugin-skill scan reads
-only the installed `installPath`s from the registry, **not** a blanket
-`plugins/cache` scan (which also holds every stale cached version), and names each
-skill by its `SKILL.md` frontmatter `name:`.
+- **Host launch toolchain** — the `yolobox` binary (+ its own version via the
+  `version` subcommand; note `yolobox --version` with dashes forwards to the
+  harness and prints e.g. `2.1.170 (Claude Code)`, *not* yolobox's version),
+  **Claude Code on the host** (`claude --version`), and a reachable container
+  runtime (off Linux, a reminder it must be in Linux-container/WSL2 mode).
+- **Host config + state** — `config.toml` (image ref + mounts parsed, dumped
+  verbatim), that each **mount source exists on the host** (a missing one is the
+  #1 silent cause of a dead bridge), the host `~/.claude` bridge sources, and
+  **CRLF line endings** in the shell scripts (the classic Windows breakage — a
+  `\r` in the shim's shebang yields `bad interpreter`).
+- **Docker image identity** — read straight from the host via `docker image
+  inspect`: local digest, created time, OCI labels, and the baked `SLDS_*`
+  provenance (the SLDS build revision/date + the upstream `finbarr/yolobox` base
+  digest it was layered on; see *Image provenance* below).
+- **In-image contract** (probe container) — the default user is `yolo`, the launch
+  shim is installed, the launch-chain links exist, the real `claude` entry point
+  resolves, the core tool stack is present, `LC_NUMERIC=C`, and the Claude Code
+  version shipped in the image.
+- **Live host bridge** (probe container, with the real `/host-claude-*` mounts
+  attached) — it **reproduces the launch shim's symlink swap** and verifies each
+  mount attaches and is writable and the symlink resolves; with `--write-probe` a
+  sentinel written *in the container* is confirmed back *on the host* (genuine
+  two-way proof). This replaces the old "must already be inside a box" check — the
+  bridge can now be integration-tested anytime, from the host.
+
+It then prints an inventory (informational, never affects the exit code) read from
+the host `~/.claude`: the **Claude Code plugins** installed (name@marketplace +
+scope) and their marketplaces, and the **skills** available to Claude Code —
+standalone (`~/.claude/skills`) plus those bundled in the *currently-installed*
+plugin versions. The plugin-skill scan reads only the installed `installPath`s
+from the registry, **not** a blanket `plugins/cache` scan (which also holds every
+stale cached version), and names each skill by its `SKILL.md` frontmatter `name:`.
 
 ```sh
-sh scripts/yolobox-doctor.sh               # auto-detects host vs in-box
-sh scripts/yolobox-doctor.sh --write-probe # in-box: also test host write-through
+sh scripts/yolobox-doctor.sh               # full host-side report
+sh scripts/yolobox-doctor.sh --write-probe # also prove bridge write-through
 ```
 
-It is POSIX `sh` (runs under dash on WSL2-Ubuntu, bash on macOS, …), never
-mutates state (except the opt-in `--write-probe`, which writes and removes a
-sentinel), and exits non-zero if any check fails — so it doubles as a CI smoke
-test. Run it from the repo root so the host-side line-ending check can find the
-scripts.
+It is POSIX `sh` (runs under dash on WSL2-Ubuntu, bash on macOS, …) and exits
+non-zero if any check fails — so it doubles as a CI smoke test. It does not mutate
+host state: the image/bridge checks run in a throwaway `docker run --rm` probe
+container (ephemeral, auto-removed), and only the opt-in `--write-probe` touches
+the host — writing and then removing a single sentinel through the sessions mount
+to prove write-through. Run it from the repo root so the host-side line-ending
+check can find the scripts.
 
 ## What's installed
 
@@ -196,12 +202,12 @@ provenance in, supplied by CI as build-args (defaulting to `unknown` so a plain
 | `SLDS_BASE_IMAGE` | upstream base ref (`ghcr.io/finbarr/yolobox:latest`) | env + `org.opencontainers.image.base.name` |
 | `SLDS_BASE_DIGEST` | that base's **immutable digest**, resolved once at build time | env + `org.opencontainers.image.base.digest` |
 
-Each value is baked **both** as an `ENV` (so it's readable *inside* a running box,
-which has no runtime to inspect its own image) **and** as an OCI `LABEL` (so the
-host can read it with `docker image inspect`). `yolobox-doctor.sh` surfaces them in
-its *Docker image* section — in-box from the env, on the host by inspecting the
-configured image ref. The base digest is resolved once in CI's `prepare` job and
-shared by both arch legs, so every per-arch image carries identical provenance.
+Each value is baked **both** as an `ENV` (so it's readable from *inside* a
+container, which has no runtime to inspect its own image) **and** as an OCI `LABEL`
+(so it's readable from outside via `docker image inspect`). `yolobox-doctor.sh`
+surfaces them in its *Docker image* section by inspecting the configured image ref
+on the host. The base digest is resolved once in CI's `prepare` job and shared by
+both arch legs, so every per-arch image carries identical provenance.
 
 ## R packages — repository policy and date pin
 
