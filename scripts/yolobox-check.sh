@@ -1,17 +1,20 @@
 #!/bin/sh
-# trust-check.sh — live, in-box verification of the yolobox sandbox boundary.
+# yolobox-check.sh — live, in-box check of the yolobox sandbox: is it SAFE and is
+# it FUNCTIONAL as a Claude Code (CC) workspace?
 #
 # Purpose
-#   Answer one question empirically: "can I let an agent run with
-#   --dangerously-skip-permissions in this box?" It runs the checks from
-#   TRUST-TESTS.md (this file's prose companion) and prints a categorized
-#   PASS/WARN/FAIL report with a bottom-line verdict.
+#   Two questions, one report:
+#     (1) SAFETY  — "can I let an agent run with --dangerously-skip-permissions
+#                    in this box?" (containment of host fs / secrets / privilege)
+#     (2) FUNCTION — "can the agent actually get work done?" (git+commit, CC
+#                    config, an edit→build→run loop, tools, disk)
 #
-#   PASS  = a containment boundary HOLDS (host fs / secrets / privilege).
-#   FAIL  = a boundary is BROKEN — do not trust skip-permissions until fixed.
-#   WARN  = a capability is OPEN BY DESIGN (GitHub push, network egress).
-#           Not a breach — a decision: accept it, or disable it in config.toml.
-#   INFO  = neutral context.
+#   PASS  = a check holds.
+#   FAIL  = a CONTAINMENT boundary is BROKEN — do not trust skip-permissions.
+#           (Reserved for safety only, so a non-zero exit always means "unsafe".)
+#   WARN  = either a capability OPEN BY DESIGN (GitHub push, network egress) or a
+#           FUNCTIONALITY problem (e.g. commits would fail). Review, don't ignore.
+#   INFO  = neutral context / inventory.
 #
 # HOST-AGNOSTIC
 #   Nothing about a particular user or machine is hardcoded. Everything
@@ -30,8 +33,8 @@
 # Portability: POSIX sh (dash/ash/bash). Colour only on a TTY.
 #
 # Usage
-#   sh trust-check.sh           # run every check (incl. the heavy R/LaTeX stack)
-#   sh trust-check.sh -h        # help
+#   sh yolobox-check.sh         # run every check (incl. the heavy R/LaTeX stack)
+#   sh yolobox-check.sh -h      # help
 #
 # Exit status: 0 = no FAIL (WARN allowed), 1 = at least one containment FAIL,
 #              2 = wrong context (run on host) / bad usage.
@@ -40,8 +43,8 @@ set -u
 # ── Options ───────────────────────────────────────────────────────────────────
 for arg in "$@"; do
   case "$arg" in
-    -h|--help) printf 'Usage: sh trust-check.sh\n'; exit 0 ;;
-    *) printf 'trust-check: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
+    -h|--help) printf 'Usage: sh yolobox-check.sh\n'; exit 0 ;;
+    *) printf 'yolobox-check: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
 
@@ -84,7 +87,10 @@ pass "in a yolobox container (\$YOLOBOX=$YOLOBOX)"
 # is missing, and each consumer has a live-probe fallback.
 CTX="${YOLOBOX_CONTEXT_FILE:-/run/yolobox/context.json}"
 HAVE_CTX=0; { [ -r "$CTX" ] && have jq; } && HAVE_CTX=1
-jqv() { [ "$HAVE_CTX" -eq 1 ] && jq -r "$1 // empty" "$CTX" 2>/dev/null; }
+# jqv: one scalar; null/absent -> empty. NOTE we must NOT use `expr // empty`
+# here: in jq, `false // empty` yields empty, so a boolean FALSE would vanish.
+# The explicit null test preserves a literal `false` while still blanking absent.
+jqv() { [ "$HAVE_CTX" -eq 1 ] && jq -r "($1) as \$v | if \$v==null then empty else \$v end" "$CTX" 2>/dev/null; }
 jql() { [ "$HAVE_CTX" -eq 1 ] && jq -r "$1" "$CTX" 2>/dev/null; }
 
 if [ "$HAVE_CTX" -eq 1 ]; then
@@ -112,6 +118,7 @@ S_NET=$(jqv '.config.network')
 S_DOCKER=$(jqv '.config.docker')
 S_SCRATCH=$(jqv '.config.scratch')
 S_ROPROJ=$(jqv '.config.readonly_project')
+S_CCFG=$(jqv '.config.claude_config')
 
 # ── 1. Identity & privilege ───────────────────────────────────────────────────
 section "1. Identity & privilege"
@@ -125,7 +132,7 @@ case "$u" in root|"") warn "running as '${u:-?}' in-box (most images drop to an 
 section "2. Filesystem confinement"
 
 # 2a. The project mount: writable (the agent needs it) unless launched read-only.
-canary="$PROJECT_DIR/.trustcheck_$$"
+canary="$PROJECT_DIR/.yoloboxcheck_$$"
 if (touch "$canary") 2>/dev/null; then
   rm -f "$canary"
   if [ "$S_ROPROJ" = true ]; then warn "project is writable but readonly_project=true (config mismatch?)"
@@ -143,7 +150,7 @@ if [ -n "$RO_TARGETS" ]; then
     [ -n "$m" ] || continue
     [ "$m" = "$PROJECT_DIR" ] && continue
     [ -e "$m" ] || continue
-    c="$m/.trustcheck_should_fail_$$"
+    c="$m/.yoloboxcheck_should_fail_$$"
     if (touch "$c") 2>/dev/null; then
       fail "wrote into read-only mount $m — it is NOT actually read-only!"; rm -f "$c" 2>/dev/null
     else
@@ -157,7 +164,7 @@ else
   # project's parent, which in the common nested-mount layout is the ro parent.
   parent=$(dirname "$PROJECT_DIR")
   if [ "$parent" != "/" ] && [ "$parent" != "$PROJECT_DIR" ] && [ -e "$parent" ]; then
-    c="$parent/.trustcheck_should_fail_$$"
+    c="$parent/.yoloboxcheck_should_fail_$$"
     if (touch "$c") 2>/dev/null; then
       rm -f "$c" 2>/dev/null
       info "project parent ($parent) is writable — no read-only parent mount here (config-dependent)"
@@ -245,10 +252,13 @@ else
   [ "$S_DOCKER" = true ] && info "  (manifest says docker=true but no socket found)"
 fi
 
-# ── 7. Tools work (so the agent can finish without manual installs) ───────────
-section "7. Tool stack"
-have claude && pass "claude resolves: $(claude --version 2>/dev/null | head -1)" \
-            || warn "claude not on PATH (harness not installed in this image?)"
+# ══════════════════════════════════════════════════════════════════════════════
+# FUNCTIONALITY — from here down, can the agent actually get work done? Problems
+# below are WARN (not FAIL): they degrade usefulness but are not safety breaches.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# ── 7. Tool stack (build & language) ──────────────────────────────────────────
+section "7. Tool stack (build & language)"
 missing=""
 for t in git rg jq; do have "$t" || missing="$missing $t"; done
 [ -z "$missing" ] && pass "essential CLI present (git, rg, jq)" \
@@ -278,18 +288,157 @@ if have pdflatex; then
   rm -rf "$tdir" 2>/dev/null
 fi
 
-# ── 8. Persistence semantics ──────────────────────────────────────────────────
-section "8. Persistence (home volume vs ephemeral root)"
+# ── 8. Git & commit workflow (the core CC loop) ───────────────────────────────
+section "8. Git & commit workflow"
+# Identity — CC's commits need an author. git_config=true copies the host's in.
+gname=$(git config --get user.name 2>/dev/null)
+gemail=$(git config --get user.email 2>/dev/null)
+if [ -n "$gname" ] && [ -n "$gemail" ]; then
+  pass "git identity set ($gname <$gemail>)"
+else
+  warn "git user.name/user.email not set — CC commits fail or misattribute (git_config=true?)"
+fi
+# Project is a git work tree where you launched it.
+if git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  pass "project is a git work tree ($PROJECT_DIR)"
+else
+  info "project is not a git repo — git workflow checks limited"
+fi
+# delta pager wired (image ergonomics for diffs/log/show).
+case "$(git config --get core.pager 2>/dev/null)" in
+  *delta*) pass "git pager is delta (syntax-highlighted diffs)" ;;
+  *)       info "git core.pager is not delta" ;;
+esac
+# A real commit must work — in a THROWAWAY repo, never your project. This also
+# catches the classic trap: a copied-in host gitconfig with commit.gpgsign=true
+# but no GPG key in-box makes EVERY CC commit fail silently.
+gtmp=$(mktemp -d 2>/dev/null)
+if [ -n "$gtmp" ] && git -C "$gtmp" init -q >/dev/null 2>&1; then
+  git -C "$gtmp" config user.email check@example.com
+  git -C "$gtmp" config user.name  yolobox-check
+  echo probe > "$gtmp/f"
+  if git -C "$gtmp" add f >/dev/null 2>&1 && git -C "$gtmp" commit -qm probe >/dev/null 2>&1; then
+    pass "git can stage & commit (throwaway repo; uses your real git config)"
+  else
+    if [ "$(git config --get commit.gpgsign 2>/dev/null)" = true ]; then
+      warn "commit FAILED: commit.gpgsign=true but no GPG key in-box — CC commits will fail. Disable signing or don't copy it in."
+    else
+      warn "git commit failed in a clean throwaway repo — the core git workflow is broken"
+    fi
+  fi
+  rm -rf "$gtmp" 2>/dev/null
+fi
+
+# ── 9. Claude Code readiness ──────────────────────────────────────────────────
+section "9. Claude Code readiness"
+if have claude; then
+  pass "claude resolves: $(claude --version 2>/dev/null | head -1)"
+else
+  warn "claude not on PATH — the harness is missing from this image"
+fi
+# settings.json (often mounted in): present AND valid JSON — CC refuses bad JSON.
+cset="$BOX_HOME/.claude/settings.json"
+if [ -f "$cset" ]; then
+  if have jq && jq -e . "$cset" >/dev/null 2>&1; then
+    pass "CC settings.json present and valid JSON"
+  else
+    warn "CC settings.json present but NOT valid JSON — CC may ignore or refuse it"
+  fi
+else
+  info "no ~/.claude/settings.json in-box (CC uses defaults)"
+fi
+# statusline helper (mounted in this setup): present + executable.
+csl="$BOX_HOME/.claude/statusline-command.sh"
+if [ -f "$csl" ]; then
+  [ -x "$csl" ] && pass "CC statusline script present & executable" \
+                || warn "CC statusline present but not executable (chmod +x)"
+fi
+# Global agent instructions / skills copied in (copy_agent_instructions=true).
+[ -f "$BOX_HOME/.claude/CLAUDE.md" ] && info "global CLAUDE.md present in-box"
+if [ -d "$BOX_HOME/.claude/skills" ]; then
+  ns=$(find "$BOX_HOME/.claude/skills" -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
+  info "standalone skills available in-box: ${ns:-0}"
+fi
+# Auth posture (never prints the token value — only its presence).
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  info "CLAUDE_CODE_OAUTH_TOKEN present — headless/-p runs can authenticate"
+else
+  info "no OAuth token forwarded — interactive /login needed once per session (claude_config=${S_CCFG:-?})"
+fi
+
+# ── 10. Edit → build → run loop (can the agent run code it writes?) ───────────
+section "10. Edit-build-run loop"
+rtmp=$(mktemp -d 2>/dev/null || echo "/tmp/yoloboxcheck.$$")
+mkdir -p "$rtmp" 2>/dev/null
+ran=0
+if have node; then
+  printf 'console.log("ok")\n' > "$rtmp/t.js"
+  [ "$(node "$rtmp/t.js" 2>/dev/null)" = ok ] \
+    && { pass "node runs a written script"; ran=1; } || warn "node failed to run a script"
+fi
+if have python3; then
+  [ "$(python3 -c 'print("ok")' 2>/dev/null)" = ok ] \
+    && { pass "python3 runs"; ran=1; } || warn "python3 present but failed to run"
+fi
+ccbin=$(command -v cc 2>/dev/null || command -v gcc 2>/dev/null || command -v clang 2>/dev/null)
+if [ -n "$ccbin" ]; then
+  printf '#include <stdio.h>\nint main(void){puts("ok");return 0;}\n' > "$rtmp/t.c"
+  if "$ccbin" "$rtmp/t.c" -o "$rtmp/t.out" 2>/dev/null && [ "$("$rtmp/t.out" 2>/dev/null)" = ok ]; then
+    pass "C toolchain compiles & runs ($(basename "$ccbin"))"; ran=1
+  else
+    warn "C compile/run failed via $(basename "$ccbin")"
+  fi
+fi
+[ "$ran" -eq 0 ] && info "no node/python3/C compiler found to exercise an edit-run loop"
+rm -rf "$rtmp" 2>/dev/null
+
+# ── 11. Environment & resources ───────────────────────────────────────────────
+section "11. Environment & resources"
+# Editor — git commit-message editing, sudoedit, etc. honor this. The *vi*
+# pattern already covers vim/nvim/vi, so list only non-overlapping alternatives.
+case "${EDITOR:-}${VISUAL:-}" in
+  *nano*|*emacs*|*vi*) pass "EDITOR/VISUAL set (EDITOR='${EDITOR:-}', VISUAL='${VISUAL:-}')" ;;
+  *) info "EDITOR/VISUAL not set to a known editor (EDITOR='${EDITOR:-unset}')" ;;
+esac
+# $HOME/.local/bin on PATH so user-scope installs win over system ones.
+case ":$PATH:" in
+  *":$BOX_HOME/.local/bin:"*) pass "$BOX_HOME/.local/bin is on PATH" ;;
+  *) info "$BOX_HOME/.local/bin not on PATH (user-scope installs may be shadowed)" ;;
+esac
+# Passwordless sudo lets CC apt-install a tool a task needs.
+if have sudo && sudo -n true 2>/dev/null; then
+  info "passwordless sudo available — CC can install packages in-box (ephemeral)"
+else
+  info "no passwordless sudo — extra packages need a .yolobox.Dockerfile fragment"
+fi
+# Login shell.
+case "${SHELL:-}" in *zsh*) info "login shell: zsh" ;; *) info "login shell: ${SHELL:-unset}" ;; esac
+# Ergonomic CLI inventory — informational, never fails the run.
+nh=""; for t in fd bat fzf zoxide delta starship glow yq tmux; do have "$t" || nh="$nh $t"; done
+[ -z "$nh" ] && info "ergonomic CLI all present (fd bat fzf zoxide delta starship glow yq tmux)" \
+             || info "ergonomic CLI missing:$nh"
+# Disk headroom — low space silently breaks builds, installs, and git ops.
+for d in "$PROJECT_DIR" /tmp "$BOX_HOME"; do
+  [ -d "$d" ] || continue
+  avail_kb=$(df -Pk "$d" 2>/dev/null | awk 'NR==2{print $4}')
+  [ -n "$avail_kb" ] || continue
+  mb=$((avail_kb/1024))
+  if [ "$mb" -lt 512 ]; then warn "low disk on $d: ${mb} MB free (<512 MB)"
+  else info "disk free on $d: ${mb} MB"; fi
+done
+
+# ── 12. Persistence semantics ─────────────────────────────────────────────────
+section "12. Persistence (home volume vs ephemeral root)"
 if [ "$S_SCRATCH" = true ]; then
   info "scratch mode (config.scratch=true): \$HOME is EPHEMERAL this run, nothing persists"
 else
-  marker="$BOX_HOME/.trustcheck_persist"
+  marker="$BOX_HOME/.yolobox-check.persist"
   if [ -f "$marker" ]; then
     info "previous marker survived: $(cat "$marker" 2>/dev/null) — \$HOME persists across launches"
   else
     info "no prior marker — writing one; relaunch a box and re-run to see it survive"
   fi
-  printf 'written-by-trust-check pid=%s\n' "$$" > "$marker" 2>/dev/null
+  printf 'written-by-yolobox-check pid=%s\n' "$$" > "$marker" 2>/dev/null
   info "note: \$HOME ($BOX_HOME) PERSISTS between sessions; /tmp & root fs reset each launch"
 fi
 
@@ -302,11 +451,12 @@ if [ "$FAIL_N" -gt 0 ]; then
   printf '  Do NOT run --dangerously-skip-permissions until this is fixed.\n'
   exit 1
 fi
-printf '  %sVerdict:%s host filesystem, local secrets & privilege are contained.\n' "$C_BOLD" "$C_OFF"
+printf '  %sSafety:%s host filesystem, local secrets & privilege are contained.\n' "$C_BOLD" "$C_OFF"
 if [ "$WARN_N" -gt 0 ]; then
-  printf '  The WARNs above are capabilities OPEN BY DESIGN (GitHub / network):\n'
-  printf '  the boundary is your host & secrets, NOT your GitHub account or the net.\n'
-  printf '  Accept them, or tighten gh_token / network mode in config.toml.\n'
+  printf '  Review the WARNs above — each is one of:\n'
+  printf '    • a capability OPEN BY DESIGN (GitHub push / network egress), or\n'
+  printf '    • a FUNCTIONALITY gap (e.g. commits would fail, a tool is missing).\n'
+  printf '  Safety warns: accept or tighten gh_token / network in config.toml.\n'
 fi
 printf '  Full rationale: yolobox/TRUST-TESTS.md\n'
 exit 0
