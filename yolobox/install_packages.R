@@ -33,14 +33,6 @@
 # still trips this layer.
 
 Sys.setenv(NOT_CRAN = "true")
-# Point pak's internal libcurl at the SYSTEM CA bundle. pak normally uses its own
-# bundled curl-ca-bundle.crt, but that file can be absent in this image (it is not
-# present under /usr/local/lib/R/site-library/pak/), which makes pak's NON-PPM HTTPS
-# queries fail with "error setting certificate verify locations" — breaking the
-# GitHub (vistool) and r-universe (mlr3extralearners) resolution in the extra step
-# below. The ca-certificates system bundle is always present, so use it. Set here in
-# the parent process so pak's background subprocess inherits it.
-Sys.setenv(CURL_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt")
 install.packages(
     "pak",
     repos = sprintf(
@@ -48,6 +40,36 @@ install.packages(
         .Platform$pkgType, R.Version()$os, R.Version()$arch
     )
 )
+# Repair pak's CA bundle so the NON-PPM resolution (GitHub for vistool, r-universe
+# for mlr3extralearners, in the extra step at the bottom) can do TLS.
+#
+# Mechanism (verified against pak's source): pak does that resolution over its OWN
+# embedded libcurl. At install time pak's embed_ca_certs() DOWNLOADS
+# https://curl.se/ca/cacert.pem into <pak>/curl-ca-bundle.crt, and in its worker
+# subprocess `.onLoad` points libcurl's CAINFO at that file
+# (options(async_http_cainfo = system.file(package="pak", "curl-ca-bundle.crt"))).
+# In this build that curl.se download is unreliable and leaves a file libcurl
+# cannot load, so every non-PPM HTTPS query dies with "error setting certificate
+# verify locations" → "Cannot query GitHub, are you offline?". (CURL_CA_BUNDLE does
+# NOT help — the worker's explicit CAINFO overrides it; nor does deleting the file
+# reliably, since that just falls back to libcurl's compiled default.)
+#
+# Fix: overwrite that cert with the always-present, valid system CA bundle
+# (ca-certificates). Empirically a valid bundle at this exact path makes the
+# GitHub/r-universe resolution succeed. UNCONDITIONAL overwrite is the point: the
+# broken file embed_ca_certs leaves already exists, so a "create only if missing"
+# guard would skip it (the bug in the previous attempt).
+local({
+    sys_ca <- "/etc/ssl/certs/ca-certificates.crt"
+    pak_ca <- file.path(find.package("pak"), "curl-ca-bundle.crt")
+    if (!file.exists(sys_ca)) {
+        stop("system CA bundle missing at ", sys_ca,
+             " — is the ca-certificates package installed?", call. = FALSE)
+    }
+    if (!file.copy(sys_ca, pak_ca, overwrite = TRUE)) {
+        stop("could not install system CA bundle into ", pak_ca, call. = FALSE)
+    }
+})
 # Make PPM the SOLE repo by REPLACING the repos option outright, rather than
 # pak::repo_add() which only appends PPM and leaves the default CRAN entry in
 # place — that residual entry could let a package missing from the PPM snapshot
