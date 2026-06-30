@@ -102,6 +102,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # install_packages.R). magick dynamically links libMagick++ at namespace-load
     # time, so without this `library(vistool)` fails with a shared-object error.
     libmagick++-dev \
+    # gsfonts: Ghostscript/URW base fonts — magick's declared SystemRequirements.
+    # A soft dep (magick loads without it), but it's what ImageMagick falls back to
+    # for PostScript/PDF text rendering. pak used to auto-install it as part of the
+    # vistool solve; since vistool now installs via `remotes` (which does NOT
+    # resolve system requirements), we install it explicitly here to keep parity.
+    gsfonts \
     && rm -rf /var/lib/apt/lists/*
 
 # Headless Chromium for the R webshot2/chromote stack, which `vistool` uses to

@@ -156,7 +156,20 @@ pkgs <- c(
     "OpenML",          # OpenML: fetch tasks/datasets from openml.org (old-stack API)
     # --- stats
     "mvtnorm",         # mvtnorm: multivariate normal/t distributions
-    "kdensity"         # kdensity: flexible kernel density estimation
+    "kdensity",        # kdensity: flexible kernel density estimation
+    # --- vistool runtime deps, pre-staged here as PPM binaries ---
+    # vistool itself installs from GitHub via remotes below, but remotes does NOT
+    # fetch PPM binaries (it would compile these from source). So we install
+    # vistool's heavier hard deps HERE, in the binary PPM solve, and remotes then
+    # only has to build vistool itself (its deps are already present). pak pulls
+    # their own transitive deps (cpp11, AsioHeaders, websocket, …) as binaries too.
+    "magick",          # magick: ImageMagick bindings (links libmagick++-dev)
+    "webshot2",        # webshot2: screenshot htmlwidgets/plotly via headless Chromium
+    "chromote",        # chromote: drive headless Chromium over the DevTools protocol
+    "lhs",             # lhs: Latin hypercube samples (vistool optimization demos)
+    "rootSolve",       # rootSolve: roots/steady-states of nonlinear systems
+    "ContourFunctions",# ContourFunctions: contour-plot helpers
+    "TestFunctions"    # TestFunctions: standard optimization test functions
 )
 # Network robustness. This is a NO-CACHE build that downloads ~280 packages from
 # PPM (plus r-universe/GitHub below) on every rebuild, so an occasional transient
@@ -230,9 +243,12 @@ with_retries(function() pak::pak("mlr3extralearners", dependencies = NA, ask = F
 # (its deps are version-pinned to pak; overwriting them risks breaking pak). Instead
 # we route vistool around pak: remotes uses base R's download + unzip + R CMD
 # INSTALL, never touching pak's private library. vistool's hard deps are already
-# satisfied by the main `pkgs` set plus mlr3extralearners above; `repos` (set
-# above: r-universe + PPM) resolves any remainder. dependencies = NA = hard deps
-# only, matching the policy used everywhere else here.
+# installed as PPM BINARIES by the main `pkgs` solve above (see the "vistool
+# runtime deps" block there) plus mlr3extralearners — so remotes only has to build
+# vistool ITSELF and compiles nothing else. (Plain remotes/install.packages does
+# not fetch PPM binaries, hence pre-staging the deps rather than letting remotes
+# pull them as source.) `repos` (r-universe + PPM) covers any stray remainder;
+# dependencies = NA = hard deps only, matching the policy used everywhere else.
 if (!requireNamespace("remotes", quietly = TRUE)) {
     install.packages("remotes")  # normally present via devtools; be defensive
 }
