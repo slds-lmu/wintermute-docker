@@ -158,9 +158,32 @@ pkgs <- c(
     "mvtnorm",         # mvtnorm: multivariate normal/t distributions
     "kdensity"         # kdensity: flexible kernel density estimation
 )
+# Network robustness. This is a NO-CACHE build that downloads ~280 packages from
+# PPM (plus r-universe/GitHub below) on every rebuild, so an occasional transient
+# blip on a SINGLE package download (e.g. "Failed to download backports …") would
+# otherwise fail the whole image build / daily cron. with_retries() re-runs an
+# install a few times on error; pak and remotes are idempotent (a re-run keeps
+# already-installed packages and only retries what's missing), so this is safe.
+# We also raise the download timeout from R's stingy 60s default.
+options(timeout = max(getOption("timeout"), 300L))
+with_retries <- function(do, what, tries = 3L, sleep = 15) {
+    for (i in seq_len(tries)) {
+        ok <- tryCatch({ do(); TRUE }, error = function(e) {
+            message(sprintf("[install_packages.R] %s: attempt %d/%d failed: %s",
+                            what, i, tries, conditionMessage(e)))
+            FALSE
+        })
+        if (ok) return(invisible(TRUE))
+        if (i < tries) Sys.sleep(sleep)
+    }
+    stop(sprintf("[install_packages.R] %s: failed after %d attempts", what, tries),
+         call. = FALSE)
+}
+
 # dependencies = NA -> hard deps only (Depends/Imports/LinkingTo), no Suggests.
 # See the repository-policy note above for why Suggests are excluded.
-pak::pak(pkgs, dependencies = NA, ask = FALSE)
+with_retries(function() pak::pak(pkgs, dependencies = NA, ask = FALSE),
+             "main PPM package install")
 missing <- setdiff(pkgs, rownames(installed.packages()))
 if (length(missing)) {
     stop("pak::pak() failed for: ", paste(missing, collapse = ", "), call. = FALSE)
@@ -195,7 +218,8 @@ repair_pak_ca()
 # mlr3extralearners: from the mlr-org r-universe, via pak. It arrives as an
 # r-universe tar source, which pak extracts on the tar path — NOT the GitHub-zip
 # path that is broken below — so pak handles it fine.
-pak::pak("mlr3extralearners", dependencies = NA, ask = FALSE)
+with_retries(function() pak::pak("mlr3extralearners", dependencies = NA, ask = FALSE),
+             "mlr3extralearners install")
 
 # vistool: from GitHub, installed with REMOTES — deliberately NOT pak. WHY:
 # pak extracts GitHub zipballs via zip::unzip_process(), which loads R6 from pak's
@@ -212,7 +236,10 @@ pak::pak("mlr3extralearners", dependencies = NA, ask = FALSE)
 if (!requireNamespace("remotes", quietly = TRUE)) {
     install.packages("remotes")  # normally present via devtools; be defensive
 }
-remotes::install_github("slds-lmu/vistool", upgrade = "never", dependencies = NA)
+with_retries(
+    function() remotes::install_github("slds-lmu/vistool", upgrade = "never",
+                                       dependencies = NA),
+    "vistool install (remotes)")
 
 # Post-check by installed package NAME (not the install spec).
 extra_names <- c("mlr3extralearners", "vistool")
