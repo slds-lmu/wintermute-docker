@@ -169,10 +169,13 @@ if (length(missing)) {
 # ── Packages NOT on CRAN/PPM — documented exception to the PPM-only policy ──────
 # Two packages the i2ml lecture uses are not on CRAN/PPM, so they can't come from the
 # date-pinned snapshot above. They install here, in a separate step, and therefore
-# float OUTSIDE the date pin. They come from DIFFERENT non-PPM sources:
-#   - mlr3extralearners — published on the mlr-org r-universe (precompiled binary).
+# float OUTSIDE the date pin. They come from DIFFERENT non-PPM sources AND via
+# DIFFERENT installers (see the per-package notes below for why):
+#   - mlr3extralearners — from the mlr-org r-universe, installed via pak.
 #   - vistool           — NOT on any r-universe (slds-lmu/mlr-org/... all 404); only
-#                         the GitHub repo exists, so it is built from GitHub source.
+#                         the GitHub repo exists, so it is built from GitHub source —
+#                         installed via REMOTES (not pak), to dodge a pak bug on the
+#                         GitHub-zip extraction path; see the vistool note below.
 # PPM is kept in `repos` so both packages' hard deps resolve from the pinned snapshot;
 # dependencies = NA keeps it to hard deps only.
 #
@@ -186,15 +189,31 @@ options(
         PPM    = "https://packagemanager.posit.co/cran/__linux__/noble/2026-06-21"
     )
 )
-# Re-assert the CA repair right before the only solve that needs it (the non-PPM
-# GitHub/r-universe queries), in case anything above rewrote pak's cert file.
+# Re-assert the CA repair right before the only pak solve that needs it (the
+# non-PPM r-universe query), in case anything above rewrote pak's cert file.
 repair_pak_ca()
-# Install SPECS differ from package names: vistool is a GitHub "owner/repo" ref.
-extra_specs <- c(
-    "mlr3extralearners",   # mlr-org r-universe (binary)
-    "slds-lmu/vistool"     # GitHub source build (not on any r-universe)
-)
-pak::pak(extra_specs, dependencies = NA, ask = FALSE)
+# mlr3extralearners: from the mlr-org r-universe, via pak. It arrives as an
+# r-universe tar source, which pak extracts on the tar path — NOT the GitHub-zip
+# path that is broken below — so pak handles it fine.
+pak::pak("mlr3extralearners", dependencies = NA, ask = FALSE)
+
+# vistool: from GitHub, installed with REMOTES — deliberately NOT pak. WHY:
+# pak extracts GitHub zipballs via zip::unzip_process(), which loads R6 from pak's
+# PRIVATE bundled library (pak/library/R6). In this image that private R6's
+# lazy-load DB is corrupt ("...pak/library/R6/R/R6.rdb is corrupt"), so pak fails
+# DETERMINISTICALLY (both arches) the moment it packages vistool — the only
+# GitHub-zip package in the set. We do NOT try to repair pak's private library
+# (its deps are version-pinned to pak; overwriting them risks breaking pak). Instead
+# we route vistool around pak: remotes uses base R's download + unzip + R CMD
+# INSTALL, never touching pak's private library. vistool's hard deps are already
+# satisfied by the main `pkgs` set plus mlr3extralearners above; `repos` (set
+# above: r-universe + PPM) resolves any remainder. dependencies = NA = hard deps
+# only, matching the policy used everywhere else here.
+if (!requireNamespace("remotes", quietly = TRUE)) {
+    install.packages("remotes")  # normally present via devtools; be defensive
+}
+remotes::install_github("slds-lmu/vistool", upgrade = "never", dependencies = NA)
+
 # Post-check by installed package NAME (not the install spec).
 extra_names <- c("mlr3extralearners", "vistool")
 missing_extra <- setdiff(extra_names, rownames(installed.packages()))

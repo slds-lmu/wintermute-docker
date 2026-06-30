@@ -211,9 +211,14 @@ CRAN/PPM, so they can't come from the date-pinned snapshot. They install in a
 **separate, clearly-marked step at the end of `install_packages.R`**, from different
 non-PPM sources:
 
-- **`mlr3extralearners`** — from the **mlr-org r-universe** (precompiled binary).
+- **`mlr3extralearners`** — from the **mlr-org r-universe**, installed via `pak`.
 - **`vistool`** — **not on any r-universe**; only the GitHub repo exists, so it is
-  built from **GitHub source** (`slds-lmu/vistool`). Its two system deps are both
+  built from **GitHub source** (`slds-lmu/vistool`), installed via **`remotes`**
+  (not `pak`). `pak` extracts GitHub zipballs through a code path that loads R6 from
+  its own private library, whose lazy-load DB is corrupt in this image — so `pak`
+  fails deterministically when packaging vistool. `remotes` uses base R's
+  download/unzip/`R CMD INSTALL`, sidestepping pak's private library entirely. Its
+  two system deps are both
   installed in the Dockerfile: **`libmagick++-dev`** (for `magick`, linked at load
   time) and **`chromium`** from the **xtradeb PPA** (for `webshot2`/`chromote`, which
   rasterize htmlwidgets/plotly via a headless browser), with `CHROMOTE_CHROME`
