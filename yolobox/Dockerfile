@@ -173,78 +173,24 @@ RUN curl -LsSf https://github.com/posit-dev/air/releases/latest/download/air-ins
     && rm -rf /root/.local /root/.config/air \
     && sed -i '/\.local\/bin\/env/d' /root/.zshrc /root/.bashrc /root/.profile 2>/dev/null || true
 
-# Claude Code (Anthropic's CLI, `claude`). Re-install `@latest` so every rebuild
-# of this image picks up the current release rather than whatever upstream
-# bundled.
+# Claude Code (Anthropic's CLI, `claude`) is INHERITED from the base
+# finbarr/yolobox image AS-IS. This image deliberately adds nothing on top of it:
+# no `@latest` reinstall, no launch shim, no host<->box session/memory/history
+# bridge, no host/image version check, and NO updater pinning. The base already
+# installs Claude Code (via the official claude.ai installer) and, under yolobox's
+# `claude_config`, copies the host ~/.claude into the box one-way at boot.
 #
-# Upstream layout we must work around:
-#   /usr/local/bin/claude          — a ~245 MB self-contained native binary
-#   /opt/yolobox/bin/claude        — wrapper that strips itself from PATH then
-#                                    re-runs `which claude` (i.e. resolves
-#                                    against the rest of PATH) and execs with
-#                                    --dangerously-skip-permissions.
-#   /home/yolo/.local/bin/claude   — symlink -> /usr/local/bin/claude
+# The in-box self-updater is intentionally left ENABLED: version drift is
+# explicitly allowed. /home/yolo is a PERSISTENT volume, so a self-update drops a
+# versioned binary under ~/.local/share/claude/versions/<v> and repoints
+# ~/.local/bin/claude at it — meaning the in-box `claude` floats with that volume
+# and may differ from the version the image baked in. That is the accepted
+# behavior here; set `ENV DISABLE_AUTOUPDATER=1` if you ever want to pin it again.
 #
-# The wrapper's `which claude` hits /home/yolo/.local/bin/claude first, which
-# points at /usr/local/bin/claude — so to override claude we MUST replace that
-# specific file. A plain `npm install -g` as root goes to root's npm prefix
-# (`/usr`, giving /usr/bin/claude) and is shadowed by the symlink; hence the
-# explicit `--prefix=/usr/local`. We remove the upstream native binary first
-# so npm's small JS shim can take its place at /usr/local/bin/claude.
-#
-# CLAUDE_CACHE_BUST: Docker caches RUN lines by literal text, so without a
-# cache-busting arg the `@latest` resolves once and then sticks forever. Bump
-# this (or pass `--build-arg CLAUDE_CACHE_BUST=$(date +%s)`) to force re-pull.
-ARG CLAUDE_CACHE_BUST=1
-RUN rm -f /usr/local/bin/claude \
-    && npm install -g --prefix=/usr/local @anthropic-ai/claude-code@latest \
-    && npm cache clean --force \
-    && /usr/local/bin/claude --version
-
-# Claude launch shim. We replace the npm `claude` launcher at
-# /usr/local/bin/claude with a wrapper that runs once before the real binary,
-# after the yolobox entrypoint snapshot but before Claude reads anything.
-# Under claude_config=true the entrypoint snapshots host ~/.claude in one-way
-# (dead copy). The shim does two fixups on top:
-#   1. Rewrites the plugin registry's absolute host paths to the container home
-#      (cp copies them verbatim, so plugins would otherwise fail to load).
-#   2. Bridges the dirs we want LIVE by symlinking them to rw host mounts staged
-#      at /host-claude-* (outside ~/.claude, so the entrypoint's `rm -rf` can't
-#      clobber the host data): ~/.claude/projects (sessions + per-project
-#      memory) and ~/.claude/history.jsonl (prompt history). Credentials are
-#      deliberately NOT bridged — a single-file bind mount pins the inode, but
-#      Claude rotates its token via atomic rename, which swaps the inode and
-#      breaks the mount; the box just logs in per session (see the shim header).
-# The shim execs the real binary by absolute path (resolved from the npm package
-# dir — see the shim's candidate probe), so the upstream /opt/yolobox/bin/claude
-# wrapper still resolves `which claude` here without recursion. The rw mounts themselves come from the sysadmin config.toml
-# `mounts` list; see claude-launch-shim.sh for the expected mount paths.
-# CRITICAL: `/usr/local/bin/claude` is the npm-created SYMLINK pointing at the
-# package's real entry point (.../claude-code/bin/claude.exe). `COPY`-ing onto
-# that path FOLLOWS the symlink and overwrites its target — i.e. it would clobber
-# the real ~245 MB Claude binary with this small shim. The shim then probes for
-# the real binary, finds only itself at bin/claude.exe, and exec-loops forever
-# (a silent CPU-pegging hang at launch). So we must NOT write through the symlink.
-# Instead: stage the shim at a neutral path, delete the symlink, then move the
-# shim into its place as a regular file. bin/claude.exe stays the real binary,
-# which the shim resolves and execs.
-COPY claude-launch-shim.sh /usr/local/bin/claude.shim
-RUN rm -f /usr/local/bin/claude \
-    && mv /usr/local/bin/claude.shim /usr/local/bin/claude \
-    && chmod 0755 /usr/local/bin/claude
-
-# Disable Claude Code's native self-updater. 
-# Why: the launch chain relies on `~/.local/bin/claude` resolving to the shim
-# (the wrapper does `which claude`, and ~/.local/bin is first on PATH). On a
-# fresh home volume that symlink is seeded from the image as
-# `~/.local/bin/claude -> /usr/local/bin/claude` (the shim), so it works. But
-# `/home/yolo` is a PERSISTENT volume: when Claude Code auto-updates, it installs
-# a versioned native binary under `~/.local/share/claude/versions/<v>` and
-# REPOINTS `~/.local/bin/claude` at it. From then on `which claude` resolves to
-# that native binary and the shim at /usr/local/bin/claude is NEVER reached — so
-# plugin path-fixup AND the live session/memory/credential bridge both silently
-# stop happening, and the breakage persists across relaunches via the volume.
-ENV DISABLE_AUTOUPDATER=1
+# Isolation is configured HOST-SIDE, not here: setting `claude_config = false`
+# in the yolobox config.toml (and dropping any /host-claude-* mounts) stops the
+# base entrypoint from copying any host Claude state in, so the box starts with a
+# clean Claude install and logs in per session. See README "Claude Code".
 
 # Interactive shell setup: zsh + plugins + starship prompt.
 # The upstream yolobox base ships fzf but its
@@ -351,7 +297,7 @@ RUN printf '\n# ---- slds drop-ins (added by the slds-yolobox image) ----\nfor _
     # /etc/bash.bashrc, which BOTH interactive login bash (via /etc/profile) and
     # interactive non-login bash source. The `case $- in *i*)` guard fires ONLY
     # for interactive shells — non-interactive `bash -c` (the agent's tool calls,
-    # the claude shim, scripts) does not read this file at all and is untouched.
+    # scripts) does not read this file at all and is untouched.
     # `exec` replaces the process so there's no lingering bash. Escape hatch:
     # `NO_ZSH=1 bash` (or any non-interactive bash) stays in bash.
     && printf '%s\n' \

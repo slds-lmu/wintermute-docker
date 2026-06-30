@@ -13,9 +13,11 @@
 #   - push to main with yolobox/** or workflow change   -> build + push
 #   - pull_request to main with the same path filter           -> build only
 #   - manual dispatch                                          -> build + push
-#     (refresh_claude input, default true: bust the Claude Code layer so
-#      @latest is re-pulled — the standard way to update Claude in the image)
 #   - daily cron (03:00 UTC)                                  -> bump PPM date + build + push + commit bump
+#
+# Note: Claude Code is no longer reinstalled or version-managed by this image —
+# it is inherited from the base finbarr/yolobox image as-is (see the Dockerfile's
+# Claude Code block), so there is no Claude-specific cache-bust knob anymore.
 #
 # Tags pushed per build:
 #   :latest         - moves with every build (default-branch only)
@@ -50,20 +52,10 @@ on:
       - ".github/workflows/docker-yolobox.yml"
 
   # Manual trigger from the Actions tab (handy for re-runs after a flaky build,
-  # or when you want to force-refresh :latest without a real change).
-  #
-  # refresh_claude: the Dockerfile installs Claude Code `@latest`, but Docker
-  # caches that RUN by literal text, so without busting the layer a dispatch
-  # build would just reuse the stale install. When this input is true (the
-  # default), we pass a unique CLAUDE_CACHE_BUST build-arg (the run id) so the
-  # Claude Code layer — and only the layers after it — rebuild fresh. Set it
-  # to false for a pure re-run that changes nothing (e.g. after a flaky build).
+  # or when you want to force-refresh :latest without a real change). A plain
+  # dispatch reuses the layer cache; for a genuinely fresh rebuild of floating
+  # upstream bits, the daily cron's no-cache path is the mechanism.
   workflow_dispatch:
-    inputs:
-      refresh_claude:
-        description: "Force re-pull of Claude Code @latest"
-        type: boolean
-        default: true
 
   # Daily rebuild so upstream apt/CRAN/PyPI/npm updates flow into :latest
   # without anyone needing to push a no-op commit. The cron also bumps the
@@ -243,17 +235,11 @@ jobs:
           # RUN's hash is unchanged and the cron just retags the old image.
           # Push / PR / dispatch builds keep using the cache for speed.
           no-cache: ${{ github.event_name == 'schedule' }}
-          # CLAUDE_CACHE_BUST: on a manual dispatch with refresh_claude=true,
-          # pass the unique run id so the `npm install @anthropic-ai/claude-code
-          # @latest` layer is re-run (see the Dockerfile's Claude Code block).
-          # All other events pass '1' — the Dockerfile's ARG default — so the
-          # cache key is unchanged and layer reuse is unaffected.
           # Build-time provenance stamped into the image (Dockerfile "Image
           # build metadata" block): the SLDS commit + timestamp, and the exact
           # upstream base ref/digest this build layered on. base_digest comes
           # from the `prepare` job so both arches agree.
           build-args: |
-            CLAUDE_CACHE_BUST=${{ (github.event_name == 'workflow_dispatch' && inputs.refresh_claude) && github.run_id || '1' }}
             SLDS_IMAGE_REVISION=${{ github.sha }}
             SLDS_IMAGE_CREATED=${{ needs.prepare.outputs.build_date }}
             SLDS_BASE_IMAGE=ghcr.io/finbarr/yolobox:latest

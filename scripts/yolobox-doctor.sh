@@ -8,21 +8,23 @@
 #
 # ONE mode: run it from the HOST.
 #   This script is always run on the host — that's where the launch toolchain
-#   (yolobox binary, container runtime, config.toml) and the real ~/.claude state
-#   live, and the host is the only place that can see ALL of it. To check the
-#   things that only exist INSIDE the image/container, the host reaches in itself:
+#   (yolobox binary, container runtime, config.toml) lives, and the host is the
+#   only place that can see ALL of it. To check the things that only exist INSIDE
+#   the image, the host reaches in itself:
 #     - `docker image inspect`             — image identity + baked metadata
 #     - `docker run --rm --entrypoint sh`  — a throwaway probe container that
-#                                            inspects image-intrinsic facts AND
-#                                            integration-tests the live bridge
-#                                            (mounts attached, symlink swap +
-#                                            optional write-through), reproducing
-#                                            exactly what the launch shim does.
-#   So there is no separate "in-box mode" anymore: you never have to be inside a
-#   box to run this. (If it detects it's been started INSIDE a box it says so and
+#                                            inspects image-intrinsic facts
+#   So there is no separate "in-box mode": you never have to be inside a box to
+#   run this. (If it detects it's been started INSIDE a box it says so and
 #   continues best-effort, but most checks need the host.)
 #
-# Checks performed (this is the integration-test surface)
+#   NOTE: this image inherits Claude Code from the base finbarr/yolobox image and
+#   adds no launch shim, no host<->box session/memory/history bridge, and no
+#   host/image version check (see README "Claude Code"). So this doctor no longer
+#   tests any of those — it checks the image's own contract and the host launch
+#   toolchain only.
+#
+# Checks performed
 #   Host launch toolchain:
 #     - yolobox binary present on PATH (+ its own version via the `version` subcmd)
 #     - Claude Code on the host (claude --version)
@@ -30,24 +32,13 @@
 #       off Linux, a reminder it must run Linux containers / WSL2 backend)
 #   Host config + state:
 #     - config.toml present; image ref + mounts parsed; every mount SOURCE exists
-#       on the host (a missing source mounts empty in-box = silent dead bridge,
-#       the #1 failure we keep hitting); file dumped verbatim as reference
-#     - host ~/.claude bridge state present (projects / history.jsonl / creds)
+#       on the host (a missing source mounts empty in-box); file dumped verbatim
 #     - shell scripts are LF, not CRLF (the Windows 'bad interpreter' trap)
 #   Image (reached into from the host, runtime permitting):
 #     - identity: local digest, created time, OCI labels, baked SLDS_* provenance
 #       (the SLDS build revision/date + the finbarr/yolobox base digest)
-#     - intrinsic contract via a probe container: default user is 'yolo', the
-#       launch shim is installed, the launch-chain links exist, the real Claude
-#       Code entry point resolves, the core tool stack is present, LC_NUMERIC=C,
-#       and the Claude Code version shipped in the image
-#   Live host bridge (integration-tested from the host via the probe container):
-#     - each bridge mount attaches and is writable inside the container, the
-#       shim's symlink swap resolves (~/.claude/<x> -> /host-claude-*), and with
-#       --write-probe a sentinel written in the container actually appears back
-#       on the host (genuine two-way proof)
-#   Claude Code version: host (claude --version) vs image (probe) — WARN if they
-#     differ, since the box shares live state with the host (non-fatal)
+#     - intrinsic contract via a probe container: default user is 'yolo', Claude
+#       Code resolves in the image, the core tool stack is present, LC_NUMERIC=C
 #   Inventory (informational, never affects exit code; read from host ~/.claude):
 #     - installed Claude Code plugins (+ scope) and their marketplaces
 #     - skills available to Claude Code (standalone + currently-installed plugins)
@@ -65,20 +56,13 @@
 #
 # Usage
 #   sh scripts/yolobox-doctor.sh              # full host-side report
-#   sh scripts/yolobox-doctor.sh --write-probe  # also prove bridge write-through
-#                                               # (writes+removes a host sentinel
-#                                               #  via the probe container)
 set -u
 
 # ── Options ──────────────────────────────────────────────────────────────────
-WRITE_PROBE=0
 for arg in "$@"; do
   case "$arg" in
-    --write-probe) WRITE_PROBE=1 ;;
     -h|--help)
-      printf 'Usage: sh yolobox-doctor.sh [--write-probe]\n'
-      printf '  --write-probe  also prove bridge write-through (writes a host sentinel\n'
-      printf '                 via the probe container, then removes it)\n'
+      printf 'Usage: sh yolobox-doctor.sh\n'
       exit 0 ;;
     *) printf 'yolobox-doctor: unknown argument: %s\n' "$arg" >&2; exit 2 ;;
   esac
@@ -99,8 +83,6 @@ fi
 
 PASS_N=0; WARN_N=0; FAIL_N=0
 FIRST_FAIL=""   # captured to build the "most likely stuck here" hint
-CC_HOST=""      # bare semver of Claude Code on the host (captured below)
-CC_IMAGE=""     # bare semver of Claude Code in the image (captured from the probe)
 
 section() { printf '\n%s== %s ==%s\n' "$C_BOLD" "$1" "$C_OFF"; }
 pass()    { PASS_N=$((PASS_N+1)); printf '  %s[PASS]%s %s\n' "$C_GREEN" "$C_OFF" "$1"; }
@@ -200,24 +182,22 @@ else
   fail "yolobox not on PATH — install it, or you're on a machine that only runs the host side via WSL/SSH"
 fi
 
-# Claude Code on the host (the binary the host itself runs). Capture the bare
-# semver too (the line reads e.g. "2.1.170 (Claude Code)") for the host-vs-image
-# comparison after the probe runs.
+# Claude Code on the host (the binary the host itself runs). Informational only:
+# this image no longer bridges or version-compares Claude state with the host.
 if have claude; then
   cc_host_raw=$(claude --version 2>/dev/null | head -1)
   info "Claude Code (host): ${cc_host_raw:-?}"
-  CC_HOST=$(printf '%s\n' "$cc_host_raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 else
   info "Claude Code (host): 'claude' not on PATH"
 fi
 
-# Container runtime: yolobox needs one, and so do our image/bridge probes below.
+# Container runtime: yolobox needs one, and so does our image probe below.
 RT=""
 for c in docker podman container; do
   have "$c" && { RT="$c"; break; }
 done
 if [ -z "$RT" ]; then
-  fail "no container runtime found (docker / podman / apple 'container') — yolobox cannot start a box, and the image/bridge probes below will be skipped"
+  fail "no container runtime found (docker / podman / apple 'container') — yolobox cannot start a box, and the image probe below will be skipped"
 else
   pass "runtime present: $RT ($(command -v "$RT"))"
   case "$RT" in
@@ -239,12 +219,10 @@ case "$RT" in docker|podman) PROBE_RT=$RT ;; esac
 
 # =============================================================================
 # yolobox config.toml — locate, parse image ref + mounts, validate, dump.
-# Sets globals consumed later: CFG, IMG_REF, BRIDGE_PAIRS (src<TAB>dst per line,
-# only for /host-claude-* mounts whose host source exists).
+# Sets globals consumed later: CFG, IMG_REF.
 # =============================================================================
 CFG=""
 IMG_REF=""
-BRIDGE_PAIRS=""
 
 yolobox_config_section() {
   section "yolobox config (config.toml)"
@@ -254,21 +232,20 @@ yolobox_config_section() {
   done
 
   if [ -z "$CFG" ]; then
-    warn "no config.toml at the standard path — yolobox is using upstream defaults (no SLDS bridge mounts)"
+    info "no config.toml at the standard path — yolobox is using upstream defaults"
   else
     pass "config found: $CFG"
-    # Image ref the box launches from (used by the image/bridge probes below).
+    # Image ref the box launches from (used by the image probe below).
     IMG_REF=$(grep -E '^[[:space:]]*image[[:space:]]*=' "$CFG" 2>/dev/null | head -1 \
               | sed -E 's/.*=[[:space:]]*"?([^"#]+)"?.*/\1/; s/[[:space:]]*$//')
     [ -n "$IMG_REF" ] && info "configured image: $IMG_REF"
 
-    # Verify each mount's HOST source exists. A missing source is the #1 silent
-    # cause of "the bridge does nothing": docker creates the missing source as an
-    # empty dir, so it mounts empty in-box and the shim silently no-ops.
+    # Verify each mount's HOST source exists. A missing source is a common silent
+    # cause of "the mount does nothing": docker creates the missing source as an
+    # empty dir, so it mounts empty in-box.
     info "Each 'mounts' entry is host_path:container_path[:opt]. We check that the host"
     info "side (left of the ':') exists. If it doesn't, Docker silently creates it as an"
-    info "empty directory and mounts that — so the box sees nothing and the bridge it"
-    info "feeds does nothing."
+    info "empty directory and mounts that — so the box sees nothing for that mount."
     mounts=$(awk '
       /mounts[[:space:]]*=/        { inm=1 }
       inm && /"[^"]+"/ {
@@ -282,10 +259,9 @@ yolobox_config_section() {
       inm && /\]/                  { inm=0 }
     ' "$CFG" 2>/dev/null)
     if [ -z "$mounts" ]; then
-      warn "no mounts parsed from config — the bridge mounts may be missing, leaving the launch shim with nothing to bridge inside the box"
+      info "no mounts parsed from config — yolobox is using its default mount set"
     else
-      # Iterate via here-doc (not a pipe) so pass/warn counters survive, and so
-      # we can accumulate BRIDGE_PAIRS in this shell.
+      # Iterate via here-doc (not a pipe) so pass/warn counters survive.
       while IFS= read -r entry; do
         [ -z "$entry" ] && continue
         src=${entry%%:*}            # host path (what we test)
@@ -294,15 +270,8 @@ yolobox_config_section() {
         if [ -e "$src" ]; then
           pass "host source exists: $src  → in-box: $tgt"
         else
-          warn "host source MISSING: $src  → in-box: $tgt  (Docker mounts an empty dir here, so the bridge carries nothing)"
+          warn "host source MISSING: $src  → in-box: $tgt  (Docker mounts an empty dir here)"
         fi
-        # Collect the live-bridge mounts (only those whose source exists, so we
-        # never attach — and thus never auto-create — a missing host path).
-        case "$tgt" in
-          /host-claude-*)
-            [ -e "$src" ] && BRIDGE_PAIRS="${BRIDGE_PAIRS}${src}${TAB}${tgt}
-" ;;
-        esac
       done <<EOF
 $mounts
 EOF
@@ -313,38 +282,18 @@ EOF
   fi
 }
 
-# ── Host Claude state the bridge SOURCES from ─────────────────────────────────
-# The bridge mounts bind three HOST paths under ~/.claude into the box; the shim
-# then symlinks the box's ~/.claude entries onto those mounts. This checks the
-# HOST end: do those source paths exist as real Claude state? An absent source
-# isn't fatal — Claude creates it on first use — but until then its bridge
-# carries nothing. Printed right after the config so each mount sits next to the
-# state it feeds.
-host_claude_state() {
-  section "Host Claude state (bridge sources)"
-  info "These are the host ~/.claude paths the live bridge maps into the box."
-  info "If one is missing here, the box has nothing to show for it — and nothing to"
-  info "save back to the host — until Claude creates it on the host for the first time."
-  _hcs() {  # path, role, what's lost if missing
-    if [ -e "$1" ]; then pass "$2 present: $1"
-    else warn "$2 ABSENT: $1  ($3 until it exists on the host)"; fi
-  }
-  _hcs "$HOME/.claude/projects"          "sessions+memory" "no past sessions or per-project memory in-box"
-  _hcs "$HOME/.claude/history.jsonl"     "prompt history"  "no prompt history in-box"
-}
-
 # ── Shell-script line endings (CRLF = the Windows killer) ─────────────────────
-# If the shim or shell config got CRLF endings (edited/checked out on Windows),
-# the in-box '#!/bin/bash\r' breaks with 'bad interpreter'.
+# If a shell script or shell config got CRLF endings (edited/checked out on
+# Windows), the in-box '#!/bin/bash\r' breaks with 'bad interpreter'.
 line_endings_section() {
   section "Shell-script line endings"
   REPO=""
   for d in . .. "$(dirname "$0")/.." ; do
-    [ -f "$d/yolobox/claude-launch-shim.sh" ] && { REPO=$d; break; }
+    [ -f "$d/scripts/yolobox-doctor.sh" ] && { REPO=$d; break; }
   done
   if [ -n "$REPO" ]; then
     crlf=0
-    for f in "$REPO"/yolobox/*.sh "$REPO"/yolobox/zshrc "$REPO"/yolobox/zsh_aliases; do
+    for f in "$REPO"/scripts/*.sh "$REPO"/yolobox/zshrc "$REPO"/yolobox/zsh_aliases; do
       [ -f "$f" ] || continue
       if LC_ALL=C grep -q "$(printf '\r')" "$f" 2>/dev/null; then
         fail "CRLF line endings in $f — will break in-box with 'bad interpreter'. Re-checkout as LF / add .gitattributes."
@@ -410,78 +359,39 @@ docker_image_section() {
 }
 
 # =============================================================================
-# Image contract + live-bridge integration test, via ONE probe container.
+# Image contract, via ONE probe container.
 #
 # We bypass the image's entrypoint (`--entrypoint sh`) so nothing tries to do a
-# full yolobox boot; we just get a clean shell inside the image to (a) inspect
-# image-intrinsic facts and (b) integration-test the bridge with the real host
-# mounts attached. The probe reproduces the launch shim's symlink swap exactly
-# (see yolobox/claude-launch-shim.sh) — that's why we attach the /host-claude-*
-# mounts and then verify the symlinks resolve and (opt-in) writes reach the host.
+# full yolobox boot; we just get a clean shell inside the image to inspect
+# image-intrinsic facts (Claude Code resolves, the core tool stack is present,
+# LC_NUMERIC=C). There is no bridge to test: this image adds no launch shim and
+# no host<->box session/memory/history bridge (see README "Claude Code").
 #
 # Protocol: the probe prints one line per finding, prefixed '@@' and with a TAB
 # between KIND (PASS/WARN/FAIL/INFO) and message. The host reads them back via a
 # here-doc loop (NOT a pipe) so the shared pass/warn/fail counters survive.
 # =============================================================================
 run_probe() {
-  section "Image contract & live bridge (probe container)"
+  section "Image contract (probe container)"
   if [ "$IMAGE_PRESENT" -ne 1 ]; then
     info "skipped — needs the configured image present locally (see Docker image above)"
     return 0
-  fi
-
-  # Build -v flags + a space-separated list of bridge container-paths from the
-  # mounts whose host source exists. Word-splitting on VOL_ARGS is intentional.
-  VOL_ARGS=""
-  BRIDGE_TGTS=""
-  while IFS="$TAB" read -r src tgt; do
-    [ -n "${src:-}" ] || continue
-    VOL_ARGS="$VOL_ARGS -v $src:$tgt"
-    BRIDGE_TGTS="$BRIDGE_TGTS $tgt"
-  done <<EOF
-$BRIDGE_PAIRS
-EOF
-  if [ -n "$BRIDGE_TGTS" ]; then
-    info "host bridge mounts attached to the probe:$BRIDGE_TGTS"
-    info "The probe now repeats what the launch shim does at boot: for each mount it"
-    info "deletes the snapshot copy and puts a symlink in its place (~/.claude/<x> ->"
-    info "the mount), then checks that the symlink resolves and the mount is usable."
-    info "One caveat: this is a plain 'docker run', not a real yolobox launch, so it"
-    info "does NOT set up yolobox's user-ID mapping. Because of that, a mount can look"
-    info "read-only, or a write can fail to reach the host, purely because the user IDs"
-    info "don't match — not because the bridge is broken. So those two checks only ever"
-    info "WARN, never FAIL. (A real box has the mapping; trust write-through only there.)"
-  else
-    warn "no bridge mounts to attach (none configured, or their host sources are missing) — the bridge can't be tested, so only the image's own contents are checked below"
   fi
 
   # The in-container probe. Intentionally single-quoted so $VARS expand inside the
   # CONTAINER at run time, not here on the host — hence SC2016 is disabled.
   # shellcheck disable=SC2016
   probe='
-H=${HOME:-/home/yolo}
 e() { printf "@@%s\t%s\n" "$1" "$2"; }
 
-if [ -f /usr/local/bin/claude ] && grep -q claude-launch-shim /usr/local/bin/claude 2>/dev/null; then
-  e PASS "launch shim installed at /usr/local/bin/claude"
+# Claude Code is inherited from the base image (official installer, not npm), so
+# we assert it RESOLVES on PATH rather than probing a fixed install path.
+if cp=$(command -v claude 2>/dev/null); then
+  e PASS "Claude Code resolves in image: $cp"
+  v=$(claude --version 2>/dev/null | head -1)
+  [ -n "$v" ] && e INFO "Claude Code (in image): $v"
 else
-  e FAIL "/usr/local/bin/claude is not the launch shim — bridge would not be applied"
-fi
-
-for cf in /opt/yolobox/bin/claude "$H/.local/bin/claude" /usr/local/bin/claude; do
-  [ -e "$cf" ] && e PASS "launch-chain link present: $cf" || e WARN "launch-chain link missing: $cf"
-done
-
-PKG=/usr/local/lib/node_modules/@anthropic-ai/claude-code
-REAL=
-for c in "$PKG/cli.js" "$PKG/bin/claude.exe" "$PKG/bin/claude" "$PKG/claude"; do
-  [ -f "$c" ] && { REAL=$c; break; }
-done
-[ -n "$REAL" ] && e PASS "real Claude Code entry point: $REAL" || e FAIL "no Claude Code entry point under $PKG — claude would exit 127"
-
-if [ -f "$PKG/package.json" ]; then
-  v=$(grep -m1 "\"version\"" "$PKG/package.json" | sed -E "s/.*\"version\"[^\"]*\"([^\"]+)\".*/\1/")
-  e INFO "Claude Code (in image): ${v:-?}"
+  e FAIL "claude not on PATH in the image"
 fi
 
 for t in R Rscript node npm git rg jq; do
@@ -489,39 +399,10 @@ for t in R Rscript node npm git rg jq; do
 done
 
 [ "${LC_NUMERIC:-}" = C ] && e PASS "LC_NUMERIC=C (decimal '"'"'.'"'"' for R)" || e WARN "LC_NUMERIC='"'"'${LC_NUMERIC:-unset}'"'"' (expected C)"
-
-# Live-bridge reproduction: for each attached /host-claude-* mount, mirror the
-# shim swap (rm snapshot copy; symlink ~/.claude/<x> -> mount) and verify it.
-for dst in ${BRIDGE:-}; do
-  case "$dst" in
-    /host-claude-sessions)         name=projects ;;
-    /host-claude-history.jsonl)    name=history.jsonl ;;
-    *)                             name=$(basename "$dst") ;;
-  esac
-  if [ ! -e "$dst" ]; then e WARN "bridge mount not attached: $dst"; continue; fi
-  if [ -w "$dst" ]; then e PASS "bridge mount writable: $dst"; else e WARN "bridge mount not writable by the probe: $dst (either a read-only mount, or — more likely — this probe lacks the yolobox user-ID mapping, so a usable mount can still look read-only here)"; fi
-  mkdir -p "$H/.claude" 2>/dev/null
-  rm -rf "$H/.claude/$name" 2>/dev/null
-  if ln -s "$dst" "$H/.claude/$name" 2>/dev/null && [ "$(readlink "$H/.claude/$name" 2>/dev/null)" = "$dst" ]; then
-    e PASS "bridge symlink resolves: ~/.claude/$name -> $dst"
-  else
-    e FAIL "could not establish bridge symlink for ~/.claude/$name"
-  fi
-  # Write-through: only meaningful for the sessions DIR; drop a sentinel that the
-  # host verifies after the run (then removes).
-  if [ "${WP:-0}" = 1 ] && [ -d "$dst" ]; then
-    s="$dst/.yolobox-doctor-probe.$PID"
-    if (: > "$s") 2>/dev/null; then e INFO "wrote sentinel into $name (host will verify)"; else e WARN "could not write sentinel into $name"; fi
-  fi
-done
 '
 
-  # Run the probe. --entrypoint sh bypasses the image entrypoint; -e passes the
-  # bridge target list / write-probe flag / a host-unique id for the sentinel.
-  # shellcheck disable=SC2086  # VOL_ARGS must word-split into separate -v flags
-  out=$("$PROBE_RT" run --rm --entrypoint sh $VOL_ARGS \
-          -e BRIDGE="$BRIDGE_TGTS" -e WP="$WRITE_PROBE" -e PID="$$" \
-          "$IMG_REF" -c "$probe" 2>/dev/null)
+  # Run the probe. --entrypoint sh bypasses the image entrypoint.
+  out=$("$PROBE_RT" run --rm --entrypoint sh "$IMG_REF" -c "$probe" 2>/dev/null)
 
   # Dispatch the probe's findings into our reporters. Here-doc (not a pipe) keeps
   # the counters in this shell. Non-protocol stray lines are ignored.
@@ -530,56 +411,11 @@ done
       @@PASS) pass "$msg" ;;
       @@WARN) warn "$msg" ;;
       @@FAIL) fail "$msg" ;;
-      @@INFO)
-        info "$msg"
-        # Capture the image's Claude Code version for the host-vs-image check.
-        case "$msg" in
-          "Claude Code (in image): "*)
-            CC_IMAGE=$(printf '%s\n' "$msg" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) ;;
-        esac
-        ;;
+      @@INFO) info "$msg" ;;
     esac
   done <<EOF
 $out
 EOF
-
-  # Host-side half of the write-through proof: confirm each sentinel reached the
-  # host source, then remove it. Only sessions (a dir) gets one.
-  if [ "$WRITE_PROBE" -eq 1 ]; then
-    while IFS="$TAB" read -r src tgt; do
-      [ -n "${src:-}" ] || continue
-      [ -d "$src" ] || continue
-      sent="$src/.yolobox-doctor-probe.$$"
-      if [ -e "$sent" ]; then
-        pass "write reached the host: $sent — bridge is genuinely two-way"
-        rm -f "$sent" 2>/dev/null
-      else
-        warn "probe write into $tgt did not reach the host at $src — most likely because this probe lacks yolobox's user-ID mapping. Only a real yolobox box has that mapping, so this write-through test is conclusive only when run from inside one."
-      fi
-    done <<EOF
-$BRIDGE_PAIRS
-EOF
-  fi
-}
-
-# ── Claude Code version: host vs image ────────────────────────────────────────
-# The doctor is the one place that sees BOTH numbers (host via `claude --version`,
-# image via the probe), so it's where the comparison belongs. The box shares live
-# state with the host — sessions, history, snapshotted config — so a
-# version skew can muddle that shared state. Non-fatal (WARN, never FAIL): a
-# mismatch is expected right after the host updates but before the image is
-# rebuilt/pulled. Skipped silently unless BOTH versions are known.
-cc_version_check() {
-  section "Claude Code version (host vs image)"
-  if [ -z "$CC_HOST" ] || [ -z "$CC_IMAGE" ]; then
-    info "skipped — need both versions (host: ${CC_HOST:-?}, image: ${CC_IMAGE:-?}); the image one needs the probe to have run"
-    return 0
-  fi
-  if [ "$CC_HOST" = "$CC_IMAGE" ]; then
-    pass "host and image run the same Claude Code ($CC_HOST)"
-  else
-    warn "Claude Code differs — host $CC_HOST vs image $CC_IMAGE; the box shares sessions/history/config with the host, so a skew can muddle that shared state (pull/rebuild the image, or align the host)"
-  fi
 }
 
 # =============================================================================
@@ -675,12 +511,10 @@ list_skills() {
 }
 
 # ── Dispatch (single host-side flow) ──────────────────────────────────────────
-yolobox_config_section     # locates config, sets IMG_REF + BRIDGE_PAIRS
-host_claude_state          # the host state the bridge sources from
+yolobox_config_section     # locates config, sets IMG_REF
 line_endings_section       # CRLF trap
 docker_image_section       # image identity (sets IMAGE_PRESENT)
-run_probe                  # image contract + live-bridge integration test
-cc_version_check           # host vs image Claude Code (needs both versions known)
+run_probe                  # image contract
 list_plugins
 list_skills
 
