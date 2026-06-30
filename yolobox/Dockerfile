@@ -15,7 +15,11 @@ USER root
 # would falsely imply ownership and bloat the diff against upstream. Anything
 # below is either missing from upstream or something we want to pin/own here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Locale data (en_US.UTF-8 generated below; LANG/LC_ALL stay C.UTF-8)
+    # Locale data. The system default stays C.UTF-8 (inherited LANG/LC_ALL); we
+    # additionally GENERATE en_US.UTF-8 below so it is AVAILABLE for tools/users
+    # that explicitly request it (e.g. `LANG=en_US.UTF-8 some-cmd`), without
+    # making it the default. Generating an ungenerated locale would otherwise
+    # fail at use time with "Cannot set LC_* to default locale".
     locales \
     # Extra shell utilities
     procps \
@@ -117,6 +121,12 @@ RUN apt-get update \
     && add-apt-repository -y ppa:xtradeb/apps \
     && apt-get update \
     && apt-get install -y --no-install-recommends chromium \
+    # software-properties-common was only needed to run add-apt-repository; purge
+    # it and its now-orphaned python3-* deps so they don't bloat the final image.
+    # The PPA list + key it wrote (under sources.list.d/ and trusted.gpg.d/)
+    # persist, so chromium stays installable in derived images / at runtime; and
+    # chromium itself is manually installed, so --auto-remove won't touch it.
+    && apt-get purge -y --auto-remove software-properties-common \
     && rm -rf /var/lib/apt/lists/* \
     && chromium --version
 ENV CHROMOTE_CHROME=/usr/bin/chromium
@@ -136,9 +146,13 @@ RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
     && rm -rf /var/lib/apt/lists/*
 
 # CRAN apt repo + R. Provides current R instead of Ubuntu's stock r-base.
-RUN wget -qO- https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc \
-        | tee /etc/apt/trusted.gpg.d/cran_ubuntu_key.asc > /dev/null \
-    && echo "deb https://cloud.r-project.org/bin/linux/ubuntu noble-cran40/" \
+# The key is scoped via [signed-by=...] so it authenticates ONLY the CRAN repo
+# (modern apt practice, matching the charm.sh block below), rather than dropping
+# it into trusted.gpg.d where it would be trusted for every repo system-wide.
+RUN install -d -m 0755 /etc/apt/keyrings \
+    && curl -fsSL https://cloud.r-project.org/bin/linux/ubuntu/marutter_pubkey.asc \
+        -o /etc/apt/keyrings/cran_ubuntu_key.asc \
+    && echo "deb [signed-by=/etc/apt/keyrings/cran_ubuntu_key.asc] https://cloud.r-project.org/bin/linux/ubuntu noble-cran40/" \
         > /etc/apt/sources.list.d/cran.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -173,24 +187,12 @@ RUN curl -LsSf https://github.com/posit-dev/air/releases/latest/download/air-ins
     && rm -rf /root/.local /root/.config/air \
     && sed -i '/\.local\/bin\/env/d' /root/.zshrc /root/.bashrc /root/.profile 2>/dev/null || true
 
-# Claude Code (Anthropic's CLI, `claude`) is INHERITED from the base
-# finbarr/yolobox image AS-IS. This image deliberately adds nothing on top of it:
-# no `@latest` reinstall, no launch shim, no host<->box session/memory/history
-# bridge, no host/image version check, and NO updater pinning. The base already
-# installs Claude Code (via the official claude.ai installer) and, under yolobox's
-# `claude_config`, copies the host ~/.claude into the box one-way at boot.
-#
-# The in-box self-updater is intentionally left ENABLED: version drift is
-# explicitly allowed. /home/yolo is a PERSISTENT volume, so a self-update drops a
-# versioned binary under ~/.local/share/claude/versions/<v> and repoints
-# ~/.local/bin/claude at it — meaning the in-box `claude` floats with that volume
-# and may differ from the version the image baked in. That is the accepted
-# behavior here; set `ENV DISABLE_AUTOUPDATER=1` if you ever want to pin it again.
-#
-# Isolation is configured HOST-SIDE, not here: setting `claude_config = false`
-# in the yolobox config.toml (and dropping any /host-claude-* mounts) stops the
-# base entrypoint from copying any host Claude state in, so the box starts with a
-# clean Claude install and logs in per session. See README "Claude Code".
+# Claude Code is INHERITED from the base finbarr/yolobox image as-is — no
+# reinstall, launch shim, host<->box bridge, version check, or updater pinning.
+# The self-updater is left ENABLED, so the in-box `claude` floats on the
+# persistent /home/yolo volume and may drift from the image's version (accepted;
+# add `ENV DISABLE_AUTOUPDATER=1` to pin). Isolation is host-side via the yolobox
+# config.toml `claude_config` flag, not here. See README "Claude Code".
 
 # Interactive shell setup: zsh + plugins + starship prompt.
 # The upstream yolobox base ships fzf but its
