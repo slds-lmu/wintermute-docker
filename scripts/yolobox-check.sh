@@ -208,11 +208,55 @@ else
 fi
 
 # ── 4. GitHub capability (open by design) ─────────────────────────────────────
-section "4. GitHub capability  (gh_token — a DECISION, not a breach)"
+# We MEASURE the forwarded token's write capability rather than assuming it. A
+# read-only fine-grained PAT can read your repos but not push/PR — a very
+# different blast radius. The API's repo `.permissions.push` reflects your ROLE,
+# not the token, so it lies for fine-grained PATs; instead we negotiate a
+# receive-pack push with `--dry-run` (never mutates) and read the verdict. Echoes
+# "<verdict>\t<repo>" where verdict is writable|readonly|unknown. Run in a command
+# substitution, so it can't set globals — it returns everything on stdout.
+gh_write_probe() {
+  have gh && have git || { printf 'unknown\t'; return; }
+  # A repo the token can READ — the question is whether it can also WRITE it.
+  repo=$(gh api 'user/repos?affiliation=owner&sort=updated&per_page=1' \
+         --jq '.[0].full_name' 2>/dev/null)
+  [ -n "$repo" ] || { printf 'unknown\t'; return; }
+  t=$(mktemp -d 2>/dev/null) || { printf 'unknown\t%s' "$repo"; return; }
+  git -C "$t" init -q >/dev/null 2>&1
+  git -C "$t" config user.email probe@example.com
+  git -C "$t" config user.name  yolobox-check-probe
+  echo probe > "$t/p"; git -C "$t" add p >/dev/null 2>&1
+  git -C "$t" commit -qm probe >/dev/null 2>&1
+  # --dry-run does the full auth + permission negotiation but never updates the
+  # remote. A read-only token is rejected at the receive-pack advertisement (403).
+  tmo=""; have timeout && tmo="timeout 20"
+  out=$(cd "$t" && GIT_TERMINAL_PROMPT=0 $tmo git push --dry-run \
+        "https://github.com/$repo.git" HEAD:refs/heads/__yolobox_write_probe__ 2>&1)
+  rm -rf "$t" 2>/dev/null
+  case "$out" in
+    *denied*|*403*|*"not granted"*|*"Permission to"*) printf 'readonly\t%s' "$repo" ;;
+    *fatal*|*"could not"*|*"Could not"*|*"unable to"*) printf 'unknown\t%s'  "$repo" ;;
+    *) printf 'writable\t%s' "$repo" ;;
+  esac
+}
+
+section "4. GitHub capability  (gh_token — measured, not assumed)"
 if have gh && gh auth status >/dev/null 2>&1; then
   who=$(gh api user --jq .login 2>/dev/null)
-  warn "box is logged into GitHub as '${who:-you}' — it CAN push/PR as you over HTTPS"
-  info "  accept this (treat 'agent commits as me' as in-scope) OR set gh_token=false in config.toml"
+  probe=$(gh_write_probe)
+  verdict=$(printf '%s' "$probe" | cut -f1)
+  prepo=$(printf '%s' "$probe" | cut -f2)
+  case "$verdict" in
+    writable)
+      warn "GitHub token for '${who:-you}' CAN PUSH (verified write to $prepo) — box can push/PR as you"
+      info "  to limit this, use a READ-ONLY fine-grained PAT, or set gh_token=false in config.toml" ;;
+    readonly)
+      pass "GitHub token for '${who:-you}' is READ-ONLY (push to $prepo denied 403) — box cannot push/PR as you"
+      info "  it can clone/read your repos over HTTPS, but cannot modify them or your account" ;;
+    *)
+      warn "GitHub token for '${who:-you}' present, but write-capability is UNDETERMINED (offline / no readable repo)"
+      info "  re-run with network to measure; until then assume it MIGHT be writable" ;;
+  esac
 else
   pass "no usable GitHub credentials in-box (cannot act as you on GitHub)"
   [ "$S_GH" = true ] && info "  (manifest says gh_token=true, but no live gh session resolved)"
