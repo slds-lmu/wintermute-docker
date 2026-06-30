@@ -58,8 +58,12 @@ install.packages(
 # (ca-certificates). Empirically a valid bundle at this exact path makes the
 # GitHub/r-universe resolution succeed. UNCONDITIONAL overwrite is the point: the
 # broken file embed_ca_certs leaves already exists, so a "create only if missing"
-# guard would skip it (the bug in the previous attempt).
-local({
+# guard would skip it (the bug in a previous attempt). We define this as a
+# function and call it BOTH here and again immediately before the non-PPM solve
+# (belt-and-suspenders, in case anything rewrites the file in between), and it
+# prints a loud confirmation + sanity-checks the result so a build log shows
+# unambiguously that the repair ran and produced a valid bundle.
+repair_pak_ca <- function() {
     sys_ca <- "/etc/ssl/certs/ca-certificates.crt"
     pak_ca <- file.path(find.package("pak"), "curl-ca-bundle.crt")
     if (!file.exists(sys_ca)) {
@@ -69,7 +73,17 @@ local({
     if (!file.copy(sys_ca, pak_ca, overwrite = TRUE)) {
         stop("could not install system CA bundle into ", pak_ca, call. = FALSE)
     }
-})
+    # Sanity-check the result is actually a PEM bundle, not a stub/error page.
+    head <- readLines(pak_ca, n = 40, warn = FALSE)
+    if (!any(grepl("BEGIN CERTIFICATE", head, fixed = TRUE))) {
+        stop("installed pak CA bundle at ", pak_ca,
+             " does not look like a PEM bundle", call. = FALSE)
+    }
+    message(sprintf(
+        "[install_packages.R] pak CA bundle repaired: %s -> %s (%d bytes)",
+        sys_ca, pak_ca, file.size(pak_ca)))
+}
+repair_pak_ca()
 # Make PPM the SOLE repo by REPLACING the repos option outright, rather than
 # pak::repo_add() which only appends PPM and leaves the default CRAN entry in
 # place — that residual entry could let a package missing from the PPM snapshot
@@ -172,6 +186,9 @@ options(
         PPM    = "https://packagemanager.posit.co/cran/__linux__/noble/2026-06-21"
     )
 )
+# Re-assert the CA repair right before the only solve that needs it (the non-PPM
+# GitHub/r-universe queries), in case anything above rewrote pak's cert file.
+repair_pak_ca()
 # Install SPECS differ from package names: vistool is a GitHub "owner/repo" ref.
 extra_specs <- c(
     "mlr3extralearners",   # mlr-org r-universe (binary)
