@@ -13,7 +13,7 @@
 #   - push to main with yolobox/** or workflow change   -> build + push
 #   - pull_request to main with the same path filter           -> build only
 #   - manual dispatch                                          -> build + push
-#   - daily cron (03:00 UTC)                                  -> bump PPM date + build + push + commit bump
+#   - weekly cron (Sunday 03:00 UTC)                           -> bump PPM date + build + push + commit bump
 #
 # Note: Claude Code is no longer reinstalled or version-managed by this image —
 # it is inherited from the base finbarr/yolobox image as-is (see the Dockerfile's
@@ -54,22 +54,18 @@ on:
   # Manual trigger from the Actions tab (handy for re-runs after a flaky build,
   # or when you want to force-refresh :latest without a real change). A plain
   # dispatch reuses the layer cache; for a genuinely fresh rebuild of floating
-  # upstream bits, the daily cron's no-cache path is the mechanism.
+  # upstream bits, the weekly cron's no-cache path is the mechanism.
   workflow_dispatch:
 
-  # Daily rebuild so upstream apt/CRAN/PyPI/npm updates flow into :latest
+  # Weekly rebuild so upstream apt/CRAN/PyPI/npm updates flow into :latest
   # without anyone needing to push a no-op commit. The cron also bumps the
   # PPM R-package date pin to T-7 days (see the `prepare` and `commit-bump`
   # jobs) and commits the bump back to main, so the source repo always
   # reflects the date the published image was built against. Manual dispatch
   # and `push` events do NOT bump — they build against whatever is committed
   # in install_packages.R right now.
-  # NOTE: T-7 is the PPM publication-lag safety margin, NOT the cadence — each
-  # daily run still advances the pin by a day (it stays 7 days behind "today").
-  # Each daily run does a full no-cache rebuild (texlive-full etc.), so this is
-  # CI-minute heavy — intentional, to keep :latest genuinely fresh every day.
   schedule:
-    - cron: "0 3 * * *"  # daily, 03:00 UTC
+    - cron: "0 3 * * 0"  # Sunday 03:00 UTC
 
 # GITHUB_TOKEN scopes for this run. Defaults are restrictive; we opt in to
 # what we actually need.
@@ -164,7 +160,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # On scheduled (daily) builds, bump the PPM date pin in install_packages.R
+      # On scheduled (weekly) builds, bump the PPM date pin in install_packages.R
       # to the T-7 date computed by the `prepare` job, BEFORE the docker build
       # consumes the file. The bump is then committed back to main by the
       # `commit-bump` job after build/merge succeed (see job at bottom).
@@ -230,7 +226,7 @@ jobs:
           # The merge job below stitches per-arch digests into tagged manifests.
           outputs: |
             type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          # On the daily cron, ignore the layer cache entirely so apt /
+          # On the weekly cron, ignore the layer cache entirely so apt /
           # CRAN / PyPI / npm updates actually flow in. Without this, every
           # RUN's hash is unchanged and the cron just retags the old image.
           # Push / PR / dispatch builds keep using the cache for speed.

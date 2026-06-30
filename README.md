@@ -47,25 +47,23 @@ digests into one multi-arch manifest under the human-readable tags.
 |-------|--------------|
 | push to `main` touching `yolobox/**` or the workflow | build **+ push** |
 | pull request to `main` (same path filter) | build **only** (no push — fail fast on either arch) |
-| manual `workflow_dispatch` | build **+ push** (cached re-run; for a fully fresh rebuild use the daily no-cache cron) |
-| daily cron (03:00 UTC) | bump R PPM date + **no-cache** rebuild + push + commit the bump |
+| manual `workflow_dispatch` | build **+ push** (cached re-run; for a fully fresh rebuild use the weekly no-cache cron) |
+| weekly cron (Sun 03:00 UTC) | bump R PPM date + **no-cache** rebuild + push + commit the bump |
 
 **Tags pushed** (default branch): `:latest` (moves every build), `:<git-sha>`
 (immutable per commit), `:YYYY-MM-DD` (dated snapshot).
 
-**Daily refresh:** the cron bumps the R PPM date pin to T-7 days, rebuilds with
+**Weekly refresh:** the cron bumps the R PPM date pin to T-7 days, rebuilds with
 `no-cache` (so apt / CRAN / PyPI / npm updates actually flow into `:latest`), and
 on success commits the date bump back to `main` with `[skip ci]`. See *Bumping the
 R snapshot date* below — the cron automates exactly that edit. No secrets are
-needed; the per-run `GITHUB_TOKEN` is sufficient for ghcr.io pushes. (T-7 is the
-PPM publication-lag safety margin, not the cadence — each daily run still advances
-the pin by a day; a full no-cache rebuild every day is CI-minute heavy by design.)
+needed; the per-run `GITHUB_TOKEN` is sufficient for ghcr.io pushes.
 
 **Updating Claude Code in the published image:** there is nothing image-specific
 to do — Claude Code is inherited from the base `finbarr/yolobox` image as-is (no
 reinstall, no version management; see *Claude Code* below). The image version
 refreshes whenever the base image does, which a no-cache rebuild picks up (the
-daily cron, or a manual dispatch followed by the next cron). The in-box
+weekly cron, or a manual dispatch followed by the next cron). The in-box
 self-updater is also left enabled, so a running box keeps itself current
 independently of the image — version drift between image and box is allowed.
 
@@ -173,7 +171,7 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 > `glow` — all pull `@latest` / `releases/latest`, so their versions float with
 > each (no-cache) rebuild. Claude Code is not fetched here at all (inherited from
 > the base image, self-updater left enabled), so the *image's* version moves only
-> when the base image does — but a running box may self-update past it. The daily
+> when the base image does — but a running box may self-update past it. The weekly
 > no-cache cron re-resolves the floating tools above.
 
 ### Image provenance
@@ -233,7 +231,7 @@ PPM-only and date-pinned.
 
 ### Bumping the R snapshot date
 
-The daily cron bumps this pin automatically: it rewrites the `noble/<DATE>`
+The weekly cron bumps this pin automatically: it rewrites the `noble/<DATE>`
 line in `install_packages.R` to T-7 days, rebuilds no-cache, and commits the
 change back to `main` (see the workflow section above). To bump out of cycle,
 edit that line yourself and rebuild.
