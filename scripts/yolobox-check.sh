@@ -458,5 +458,4 @@ if [ "$WARN_N" -gt 0 ]; then
   printf '    • a FUNCTIONALITY gap (e.g. commits would fail, a tool is missing).\n'
   printf '  Safety warns: accept or tighten gh_token / network in config.toml.\n'
 fi
-printf '  Full rationale: yolobox/TRUST-TESTS.md\n'
 exit 0
