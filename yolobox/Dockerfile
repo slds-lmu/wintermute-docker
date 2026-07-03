@@ -151,6 +151,23 @@ RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
         texlive-full \
     && rm -rf /var/lib/apt/lists/*
 
+# quarto: Posit's scientific/technical publishing system.
+# The .deb asset is version-stamped (no stable "latest" name), so we resolve the
+# current tag from the releases/latest redirect (github.com, not the rate-limited
+# API). Arch is derived so the image builds on amd64 + arm64. Installed as a local
+# .deb via `apt-get install` (not `dpkg -i`) so deps resolve; floats with @latest.
+RUN arch="$(dpkg --print-architecture)" \
+    && tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        https://github.com/quarto-dev/quarto-cli/releases/latest | sed 's#.*/tag/##')" \
+    && ver="${tag#v}" \
+    && curl -fsSL -o /tmp/quarto.deb \
+        "https://github.com/quarto-dev/quarto-cli/releases/download/${tag}/quarto-${ver}-linux-${arch}.deb" \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/quarto.deb \
+    && rm /tmp/quarto.deb \
+    && rm -rf /var/lib/apt/lists/* \
+    && quarto --version
+
 # CRAN apt repo + R. Provides current R instead of Ubuntu's stock r-base.
 # The key is scoped via [signed-by=...] so it authenticates ONLY the CRAN repo
 # (modern apt practice, matching the charm.sh block below), rather than dropping
@@ -192,6 +209,15 @@ RUN curl -LsSf https://github.com/posit-dev/air/releases/latest/download/air-ins
     && mv /root/.local/bin/air /usr/local/bin/air \
     && rm -rf /root/.local /root/.config/air \
     && sed -i '/\.local\/bin\/env/d' /root/.zshrc /root/.bashrc /root/.profile 2>/dev/null || true
+
+# jarl: "just another R linter" (Rust binary). Same cargo-dist installer as air
+# above, so we mirror that block: install, move onto PATH, strip its rc-edits.
+RUN curl --proto '=https' --tlsv1.2 -LsSf \
+        https://github.com/etiennebacher/jarl/releases/latest/download/jarl-installer.sh | sh \
+    && mv /root/.local/bin/jarl /usr/local/bin/jarl \
+    && rm -rf /root/.local /root/.config \
+    && sed -i '/\.local\/bin\/env/d' /root/.zshrc /root/.bashrc /root/.profile 2>/dev/null || true \
+    && jarl --version
 
 # Claude Code is INHERITED from the base finbarr/yolobox image as-is — no
 # reinstall, launch shim, host<->box bridge, version check, or updater pinning.
@@ -243,6 +269,10 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get update \
     && apt-get install -y --no-install-recommends glow \
     && rm -rf /var/lib/apt/lists/*
+
+# cspell: source-code-aware spell checker (npm global CLI; node/npm from base).
+RUN npm install -g cspell \
+    && cspell --version
 
 # System-wide git config for every user (root + yolo): delta pager wiring plus a
 # couple of behavior tweaks (init.defaultBranch, pull.rebase, merge.conflictStyle).
