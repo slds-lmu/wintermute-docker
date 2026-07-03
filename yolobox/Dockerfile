@@ -151,18 +151,11 @@ RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
         texlive-full \
     && rm -rf /var/lib/apt/lists/*
 
-# quarto: Posit's scientific/technical publishing system (renders .qmd / Rmd via
-# its bundled pandoc + the LaTeX toolchain installed above). Distributed as a
-# multi-arch .deb on GitHub releases, but the asset filename is version-stamped
-# (quarto-<ver>-linux-<arch>.deb) — there is NO stable "latest" asset name like
-# air/yq use — so we resolve the current tag from the releases/latest redirect
-# (via github.com, not api.github.com, so we don't hit the 60/hr API rate limit
-# and need no jq). The arch is derived with `dpkg --print-architecture` (amd64 /
-# arm64), which matches quarto's asset suffixes verbatim, so the image builds on
-# both linux/amd64 and linux/arm64. Installed as a LOCAL .deb via `apt-get
-# install` (not `dpkg -i`) so any package deps resolve. Like the other GitHub
-# release binaries this pulls @latest and floats with each no-cache rebuild.
-# `quarto --version` is a smoke test that the CLI actually runs.
+# quarto: Posit's scientific/technical publishing system.
+# The .deb asset is version-stamped (no stable "latest" name), so we resolve the
+# current tag from the releases/latest redirect (github.com, not the rate-limited
+# API). Arch is derived so the image builds on amd64 + arm64. Installed as a local
+# .deb via `apt-get install` (not `dpkg -i`) so deps resolve; floats with @latest.
 RUN arch="$(dpkg --print-architecture)" \
     && tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
         https://github.com/quarto-dev/quarto-cli/releases/latest | sed 's#.*/tag/##')" \
@@ -217,13 +210,8 @@ RUN curl -LsSf https://github.com/posit-dev/air/releases/latest/download/air-ins
     && rm -rf /root/.local /root/.config/air \
     && sed -i '/\.local\/bin\/env/d' /root/.zshrc /root/.bashrc /root/.profile 2>/dev/null || true
 
-# jarl: "just another R linter" (Rust binary; etiennebacher/jarl), built on top
-# of `air` and using the SAME cargo-dist installer — so we mirror the air block
-# above exactly: the installer drops the binary at /root/.local/bin/jarl, which
-# we move to /usr/local/bin so every user finds it on PATH, then strip the
-# rc-file edits the installer leaves behind. Like air/yq/starship/glow this pulls
-# @latest (no version pin), so it floats with each no-cache rebuild. The final
-# `jarl --version` is a smoke test that the moved binary actually runs.
+# jarl: "just another R linter" (Rust binary). Same cargo-dist installer as air
+# above, so we mirror that block: install, move onto PATH, strip its rc-edits.
 RUN curl --proto '=https' --tlsv1.2 -LsSf \
         https://github.com/etiennebacher/jarl/releases/latest/download/jarl-installer.sh | sh \
     && mv /root/.local/bin/jarl /usr/local/bin/jarl \
@@ -282,12 +270,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends glow \
     && rm -rf /var/lib/apt/lists/*
 
-# cspell: source-code-aware spell checker (npm CLI, streetsidesoftware/cspell).
-# Not in apt, but the base image already ships nodejs + npm, so we install it
-# globally: npm's default prefix puts the launcher on PATH for every user (root +
-# yolo). Like the other GitHub/npm release tools this pulls @latest (no version
-# pin) and floats with each no-cache rebuild. `cspell --version` is a smoke test
-# that the CLI actually runs.
+# cspell: source-code-aware spell checker (npm global CLI; node/npm from base).
 RUN npm install -g cspell \
     && cspell --version
 
