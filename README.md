@@ -143,12 +143,16 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    for the R `webshot2`/`chromote` stack used by `vistool`; `CHROMOTE_CHROME` points
    at it. See *R packages* for why this PPA (and not apt/Google Chrome).
 4. **LaTeX / document toolchain** — pandoc, tidy, qpdf, poppler-utils, lmodern,
-   `texlive-full`.
+   `texlive-full`, plus **`quarto`** (Posit's publishing system, installed from
+   its multi-arch GitHub-release `.deb`; renders `.qmd`/Rmd via the bundled
+   pandoc + this LaTeX stack).
 5. **R** — current R from the CRAN apt repo, then packages via `install_packages.R`
    (see *R packages* below).
 6. **Python** — no global library stack; only `copier` as an isolated `uv` tool
    (see *Python packages* below).
-7. **Tooling binaries** — `air` (R formatter), `starship` prompt, `yq`, `glow`.
+7. **Tooling binaries** — `air` (R formatter) and `jarl` (R linter, built on air —
+   same cargo-dist installer), `starship` prompt, `yq`, `glow`, plus `cspell`
+   (source-code-aware spell checker, installed as an npm global CLI).
 8. **Claude Code** — *not* installed or customized here; inherited from the base
    image as-is. No launch shim, no host↔box bridge, no version check, and the
    self-updater is left enabled (version drift allowed); see *Claude Code* below.
@@ -167,9 +171,9 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
      ad-hoc scripts) win over their system equivalents.
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
-> The non-R binaries fetched from upstream releases — `yq`, `air`, `starship`,
-> `glow` — all pull `@latest` / `releases/latest`, so their versions float with
-> each (no-cache) rebuild. Claude Code is not fetched here at all (inherited from
+> The non-R binaries fetched from upstream releases — `yq`, `air`, `jarl`,
+> `starship`, `glow`, `quarto`, and the `cspell` npm CLI — all pull `@latest` /
+> `releases/latest`, so their versions float with each (no-cache) rebuild. Claude Code is not fetched here at all (inherited from
 > the base image, self-updater left enabled), so the *image's* version moves only
 > when the base image does — but a running box may self-update past it. The weekly
 > no-cache cron re-resolves the floating tools above.
