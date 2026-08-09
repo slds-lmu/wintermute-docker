@@ -93,7 +93,7 @@ repair_pak_ca()
 # getOption("repos"), so this single PPM entry is the only repo it resolves against.
 options(
     repos = c(
-        PPM = "https://packagemanager.posit.co/cran/__linux__/noble/2026-07-26"
+        PPM = "https://packagemanager.posit.co/cran/__linux__/noble/2026-08-02"
     )
 )
 pkgs <- c(
@@ -222,7 +222,7 @@ if (length(missing)) {
 options(
     repos = c(
         mlrorg = "https://mlr-org.r-universe.dev",
-        PPM    = "https://packagemanager.posit.co/cran/__linux__/noble/2026-07-26"
+        PPM    = "https://packagemanager.posit.co/cran/__linux__/noble/2026-08-02"
     )
 )
 # Re-assert the CA repair right before the only pak solve that needs it (the
