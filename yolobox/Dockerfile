@@ -168,6 +168,23 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm -rf /var/lib/apt/lists/* \
     && quarto --version
 
+# typst: modern markup-based typesetting system (Rust binary). Quarto bundles its
+# own typst, but only reachable as `quarto typst`; this puts a standalone `typst`
+# on PATH. Not in Ubuntu noble apt, so we fetch the static musl build from the
+# releases/latest download (floats with @latest). Asset names use Rust target
+# triples, so map dpkg's amd64/arm64 to x86_64/aarch64 for the multi-arch build.
+# The tarball holds a single `typst-<triple>/` dir; --strip-components=1 drops it
+# and we extract only the binary into /usr/local/bin (needs xz-utils, above).
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) triple=x86_64-unknown-linux-musl ;; \
+        arm64) triple=aarch64-unknown-linux-musl ;; \
+        *) echo "unsupported arch for typst" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+        "https://github.com/typst/typst/releases/latest/download/typst-${triple}.tar.xz" \
+        | tar -xJ -C /usr/local/bin --strip-components=1 "typst-${triple}/typst" \
+    && typst --version
+
 # CRAN apt repo + R. Provides current R instead of Ubuntu's stock r-base.
 # The key is scoped via [signed-by=...] so it authenticates ONLY the CRAN repo
 # (modern apt practice, matching the charm.sh block below), rather than dropping

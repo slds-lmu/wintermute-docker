@@ -145,7 +145,8 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 4. **LaTeX / document toolchain** — pandoc, tidy, qpdf, poppler-utils, lmodern,
    `texlive-full`, plus **`quarto`** (Posit's publishing system, installed from
    its multi-arch GitHub-release `.deb`; renders `.qmd`/Rmd via the bundled
-   pandoc + this LaTeX stack).
+   pandoc + this LaTeX stack), and a standalone **`typst`** (modern markup-based
+   typesetter; static musl binary from its GitHub release).
 5. **R** — current R from the CRAN apt repo, then packages via `install_packages.R`
    (see *R packages* below).
 6. **Python** — no global library stack; only `copier` as an isolated `uv` tool
@@ -172,7 +173,7 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `jarl`,
-> `starship`, `glow`, `quarto`, and the `cspell` npm CLI — all pull `@latest` /
+> `starship`, `glow`, `quarto`, `typst`, and the `cspell` npm CLI — all pull `@latest` /
 > `releases/latest`, so their versions float with each (no-cache) rebuild. Claude Code is not fetched here at all (inherited from
 > the base image, self-updater left enabled), so the *image's* version moves only
 > when the base image does — but a running box may self-update past it. The weekly
