@@ -274,6 +274,24 @@ RUN arch="$(dpkg --print-architecture)" \
         "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}" \
     && chmod +x /usr/local/bin/yq
 
+# gitleaks: secret scanner for git repos / files (Go binary). Not in Ubuntu noble
+# apt. Like quarto, the asset name is version-stamped, so resolve the current tag
+# from the releases/latest redirect (not the rate-limited API); floats with
+# @latest. Assets use x64/arm64, so map dpkg's amd64 -> x64 for the multi-arch
+# build. The tarball also holds LICENSE/README; extract only the binary.
+RUN case "$(dpkg --print-architecture)" in \
+        amd64) arch=x64 ;; \
+        arm64) arch=arm64 ;; \
+        *) echo "unsupported arch for gitleaks" >&2; exit 1 ;; \
+    esac \
+    && tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
+        https://github.com/gitleaks/gitleaks/releases/latest | sed 's#.*/tag/##')" \
+    && ver="${tag#v}" \
+    && curl -fsSL \
+        "https://github.com/gitleaks/gitleaks/releases/download/${tag}/gitleaks_${ver}_linux_${arch}.tar.gz" \
+        | tar -xz -C /usr/local/bin gitleaks \
+    && gitleaks version
+
 # glow: Charm.sh terminal Markdown renderer. Not in Ubuntu 24.04 noble repos
 # (lands in 25.04+), so we use Charm's official apt repo. The key is scoped
 # via [signed-by=...] so it only authenticates packages from repo.charm.sh
@@ -290,6 +308,13 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # cspell: source-code-aware spell checker (npm global CLI; node/npm from base).
 RUN npm install -g cspell \
     && cspell --version
+
+# defuddle: extracts the main content of a web page (article text, metadata) as
+# clean HTML/Markdown; ships a `defuddle` CLI (e.g. `defuddle parse <url> --md`).
+# npm global CLI like cspell; the former separate `defuddle-cli` package is
+# deprecated and merged into `defuddle`. Floats with @latest.
+RUN npm install -g defuddle \
+    && defuddle --version
 
 # System-wide git config for every user (root + yolo): delta pager wiring plus a
 # couple of behavior tweaks (init.defaultBranch, pull.rebase, merge.conflictStyle).

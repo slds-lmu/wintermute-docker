@@ -152,8 +152,10 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 6. **Python** — no global library stack; only `copier` as an isolated `uv` tool
    (see *Python packages* below).
 7. **Tooling binaries** — `air` (R formatter) and `jarl` (R linter, built on air —
-   same cargo-dist installer), `starship` prompt, `yq`, `glow`, plus `cspell`
-   (source-code-aware spell checker, installed as an npm global CLI).
+   same cargo-dist installer), `starship` prompt, `yq`, `gitleaks` (secret
+   scanner for git repos/files), `glow`, plus `cspell` (source-code-aware spell
+   checker) and `defuddle` (extracts a web page's main content as clean
+   HTML/Markdown), both installed as npm global CLIs.
 8. **Claude Code** — *not* installed or customized here; inherited from the base
    image as-is. No launch shim, no host↔box bridge, no version check, and the
    self-updater is left enabled (version drift allowed); see *Claude Code* below.
@@ -173,7 +175,7 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `jarl`,
-> `starship`, `glow`, `quarto`, `typst`, and the `cspell` npm CLI — all pull `@latest` /
+> `starship`, `glow`, `quarto`, `typst`, `gitleaks`, and the `cspell` / `defuddle` npm CLIs — all pull `@latest` /
 > `releases/latest`, so their versions float with each (no-cache) rebuild. Claude Code is not fetched here at all (inherited from
 > the base image, self-updater left enabled), so the *image's* version moves only
 > when the base image does — but a running box may self-update past it. The weekly
