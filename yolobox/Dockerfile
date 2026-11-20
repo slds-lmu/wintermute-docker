@@ -219,6 +219,20 @@ RUN UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
         uv tool install --no-cache copier \
     && copier --version
 
+# ansible-core: Ansible controller, so `make deploy` in the wintermute-vms
+# repos runs straight from the box without their install-prerequisites.sh venv.
+# Same isolated-uv-tool pattern as copier above; version floats (unpinned).
+# The collections those playbooks use (ansible.posix, community.general,
+# community.docker) are baked into /usr/share/ansible/collections — part of
+# Ansible's default collections search path, so every user sees them. Galaxy's
+# scratch dir under /root/.ansible is removed afterwards.
+RUN UV_TOOL_DIR=/opt/uv/tools UV_TOOL_BIN_DIR=/usr/local/bin \
+        uv tool install --no-cache ansible-core \
+    && ansible-galaxy collection install -p /usr/share/ansible/collections \
+        ansible.posix community.general community.docker \
+    && rm -rf /root/.ansible \
+    && ansible-playbook --version
+
 # air: Posit's R formatter (Rust binary). The cargo-dist installer drops the
 # binary at /root/.local/bin/air; move it to /usr/local/bin so every user
 # finds it on PATH, then strip the rc-file edits the installer leaves behind.

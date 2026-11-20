@@ -149,8 +149,11 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
    typesetter; static musl binary from its GitHub release).
 5. **R** — current R from the CRAN apt repo, then packages via `install_packages.R`
    (see *R packages* below).
-6. **Python** — no global library stack; only `copier` as an isolated `uv` tool
-   (see *Python packages* below).
+6. **Python** — no global library stack; only isolated `uv` tools: `copier`, and
+   `ansible-core` (the Ansible controller, so `make deploy` in the wintermute-vms
+   repos works without their `install-prerequisites.sh` venv) with the
+   `ansible.posix`, `community.general` and `community.docker` collections baked
+   into `/usr/share/ansible/collections` (see *Python packages* below).
 7. **Tooling binaries** — `air` (R formatter) and `jarl` (R linter, built on air —
    same cargo-dist installer), `starship` prompt, `yq`, `gitleaks` (secret
    scanner for git repos/files), `glow`, plus `cspell` (source-code-aware spell
@@ -175,7 +178,8 @@ The Dockerfile is organized into commented `RUN` blocks. In order:
 
 > **Reproducibility note.** Only the R package set is date-pinned (PPM snapshot).
 > The non-R binaries fetched from upstream releases — `yq`, `air`, `jarl`,
-> `starship`, `glow`, `quarto`, `typst`, `gitleaks`, and the `cspell` / `defuddle` npm CLIs — all pull `@latest` /
+> `starship`, `glow`, `quarto`, `typst`, `gitleaks`, `ansible-core` (+ its Galaxy
+> collections), and the `cspell` / `defuddle` npm CLIs — all pull `@latest` /
 > `releases/latest`, so their versions float with each (no-cache) rebuild. Claude Code is not fetched here at all (inherited from
 > the base image, self-updater left enabled), so the *image's* version moves only
 > when the base image does — but a running box may self-update past it. The weekly
